@@ -2,3 +2,9 @@ name = "MarketBigPictureWatch"
 uuid = "7e1bcb03-f9be-4446-ae38-0c4770cca862"
 authors = ["zhopan77 <zhopan77@gmail.com>"]
 version = "0.1.0"
+
+[deps]
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+PyPlot = "d330b81b-6aea-500a-939a-2ce795aea3ee"
