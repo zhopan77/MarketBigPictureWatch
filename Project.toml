@@ -1,10 +1,12 @@
 name = "MarketBigPictureWatch"
-uuid = "7e1bcb03-f9be-4446-ae38-0c4770cca862"
-authors = ["zhopan77 <zhopan77@gmail.com>"]
+uuid = "ff0c1feb-3a7b-4803-83b1-b83ce1784aa3"
+authors = ["Zhong Pan <zhopan77@gmail.com>"]
 version = "0.1.0"
 
 [deps]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+FredData = "6e85b7ee-7d24-5488-b1b7-e4f4198c51ac"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 PyPlot = "d330b81b-6aea-500a-939a-2ce795aea3ee"
+QuandlAccess = "9828b13b-9cf9-4ed3-a262-66ff2e7f23f2"
