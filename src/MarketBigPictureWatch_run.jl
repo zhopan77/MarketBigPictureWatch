@@ -127,7 +127,7 @@ colors = ["black", "green", "blue", "cyan", "magenta", "red", "yellow", "darkblu
 close("all")
 
 if !isdownloaded
-    println("Downloading data from Quandl, Fred, and Yahoo...\n")
+    println("Downloading data from Fred, Yahoo, and Quandl...\n")
 
     # Permalink of any Quandl data set: https://www.quandl.com/data/xxx/yyy
     # where xxx/yyy is the Quandl Code
