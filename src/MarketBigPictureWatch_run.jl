@@ -290,11 +290,11 @@ if !isdownloaded
     end
     
     # Commodity and Energy Prices represented in Continuous Front-Month Future Contracts
-    futures_underlying = ["USDIndex", "EURIndex", "JPYIndex", "2YrYield", "10YrYield", "Gold", "Silver", "Copper",
+    futures_underlying = ["USDIndex", "EURIndex", "JPYIndex", "5YrYield", "10YrYield", "Gold", "Silver", "Copper",
                             "CrudeOil", "BrentCrudeOil", "Gasoline", "NaturalGas", "Wheat", "Corn", "LiveCattle",
                             "Cotton", "Sugar", "Coffee", "Cocoa", "OrangeJuice"]
 
-    futures_symbols = ["DX=F", "6E=F", "MJY=F", "6J=F", "^TNX", "GC=F", "SI=F", "HG=F",
+    futures_symbols = ["DX=F", "6E=F", "6J=F", "^FVX", "^TNX", "GC=F", "SI=F", "HG=F",
                         "CL=F", "BZ=F", "RB=F", "NG=F", "ZW=F", "ZC=F", "LE=F",
                         "CT=F", "SB=F", "KC=F", "CC=F", "OJ=F"]
 
