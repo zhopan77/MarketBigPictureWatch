@@ -4,7 +4,8 @@ using HTTP
 using DataFrames
 using Dates
 using QuandlAccess
-using FredData
+using Statistics
+using MarketData
 println("Done.\n")
 
 # REFERENCES
@@ -32,18 +33,97 @@ fmt = "yyyy-mm-dd" # date format string
 isverbose = true
 nrows_verbose = 5
 
+function get_daily_data_from_fred(series_name::String, date_start::Date, date_end::Date, isverbose::Bool=true, nrows_verbose::Int=5)::DataFrame
+    data = DataFrame(MarketData.fred(series_name))
+    if isverbose
+        println(data[1:nrows_verbose, :], "\n...")
+    end
+    DataFrames.rename!(data, [:date, :valuestr])
+    data = data[date_start .<= data[!, :date] .<= date_end, :]
+    data[!, :value] = zeros(Float64, size(data, 1))
+    if typeof(data[1, :valuestr]) <: String
+        for n = 1:size(data, 1)
+            if data[n, :valuestr] == "."
+                data[n, :value] = NaN
+            else
+                data[n, :value] = parse.(Float64, data[n, :valuestr])
+            end
+        end
+    else
+        data[!, :value] = data[!, :valuestr]
+    end
+    data = data[!, ["date", "value"]]
+    data = data[completecases(data), :]
+    sort!(data, [:date])
+    return data
+end
+
+function get_daily_data_from_quandl(quandl::Quandl, series_name::String, date_start::Date, date_end::Date, cols::Vector{String}, isverbose::Bool=true, nrows_verbose::Int=5)
+    data = quandl(QuandlAccess.TimeSeries(series_name); start_date = date_start, end_date = date_end)
+    if isverbose
+        println(data[1:nrows_verbose, :], "\n...")
+    end
+    data = data[!, cols]
+    data = data[completecases(data), :]
+    if length(cols) == 2
+        DataFrames.rename!(data, [:date, :value])
+        sort!(data, [:date])
+        return data
+    else
+        datas = []
+        for n = 1:(length(cols)-1)
+            datatmp = data[!, [cols[1], cols[1+n]]]
+            DataFrames.rename!(datatmp, [:date, :value])
+            sort!(datatmp, [:date])
+            push!(datas, datatmp)
+        end
+        return Tuple(datas)
+    end
+end
+
+function get_daily_data_from_yahoo(symbol::String, date_start::Date, date_end::Date, isverbose::Bool=true, nrows_verbose::Int=5)::DataFrame
+    data = DataFrame(MarketData.yahoo(symbol, MarketData.YahooOpt(period1 = DateTime(date_start), period2 = DateTime(date_end))))
+    if isverbose
+        println(data[1:nrows_verbose, :], "\n...")
+    end
+    data = data[!, ["timestamp", "Close"]]
+    DataFrames.rename!(data, [:date, :value])
+    data = data[completecases(data), :]
+    sort!(data, [:date])
+    return data
+end
+
+function calc_two_dataframes(data1::DataFrame, operator::String, data2::DataFrame)::DataFrame
+    data = innerjoin(data1, data2, on=:date, makeunique=true)
+    data = data[completecases(data), :]
+    if operator == "/"
+        data[!, :ratio] = data[!, :value] ./ data[!, :value_1]
+    elseif operator == "*"
+        data[!, :ratio] = data[!, :value] .* data[!, :value_1]
+    elseif operator == "+"
+        data[!, :ratio] = data[!, :value] .+ data[!, :value_1]
+    elseif operator == "-"
+        data[!, :ratio] = data[!, :value] .- data[!, :value_1]
+    else
+        error("Unknown dataframe operator $operator")
+    end
+
+    return data
+end
+
+
 function main()
-    quandl = nothing
+    for n = 1:40; println(); end;
+
+    qd_authtoken = ""
     try
         qd_authtoken = ENV["QUANDL_API_KEY"]
-        fred_apikey = ENV["FRED_API_KEY"]
-        quandl = Quandl(qd_authtoken)
-        fred = Fred(fred_apikey)
     catch 
-        error("Quandl and Fred API keys need to be configured properly in enviromental variables QUANDL_API_KEY and FRED_API_KEY first!")
+        error("Quandl key needs to be configured properly in enviromental variables QUANDL_API_KEY first!")
     end
-    
 
+    quandl = Quandl(qd_authtoken)
+    
     date_plotstart = date_plotend - Day(Int(round(macro_yrs_ultralong*365.25, digits=0)))
     date_future_plotstart_long = date_plotend -  Day(Int(round(future_yrs_long*365.25, digits=0)))
     date_future_plotstart_short = date_plotend - Day(Int(round(future_yrs_short*365.25, digits=0)))
@@ -53,175 +133,158 @@ function main()
               "brown"]
     plotfolder = "./StockMarketBigPictureWatchPlots"
     
-    println("Downloading data from Quandl, FRED, and S&P...\n")
+    println("Downloading data from Quandl, Fred, Yahoo, and S&P...\n")
     
     flag_downloaded = false
     nattempts = 0
 
     SP500, gold, SP500gold, SP500_gold = nothing, nothing, nothing, nothing
-    while (! flag_downloaded) && nattempts < maxattempts
-        nattempts += 1
+    close("all")
 
-        try
-            # Permalink of any Quandl data set: https://www.quandl.com/data/xxx/yyy
-            # where xxx/yyy is the Quandl Code
-    
-            # S&P500 index
-            println("************** S&P500 (Fred) **************")
-            SP500 = get_data(f, "SP500"; observation_start = Dates.format(date_plotstart, fmt), observation_end = Dates.format(date_plotend, fmt)).data
-            if isverbose
-                println(SP500[1:nrows_verbose, :], "\n...")
-            end
-            SP500 = SP500[!, [:date, :value]]
-            SP500 = SP500[completecases(SP500), :]
-            sort!(SP500, [:date])
-            
-            # Gold price
-            println("\n************** Gold price (Quandl) **************")
-            gold = quandl(TimeSeries("LBMA/GOLD"); start_date = date_plotstart, end_date = date_plotend)
-            if isverbose
-                println(gold[1:nrows_verbose, :], "\n...")
-            end
-            gold = gold[!, [:Date, Symbol("USD (PM)")]]
-            rename!(gold, [:date, :value])
-            gold = gold[completecases(gold), :]
-            sort!(gold, [:date])
+    # Permalink of any Quandl data set: https://www.quandl.com/data/xxx/yyy
+    # where xxx/yyy is the Quandl Code
 
+    # S&P500 index
+    println("************** S&P500 (Fred) **************")
+    SP500 = get_daily_data_from_fred("SP500", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
-            # S&P500 / Gold
-            SP500gold = innerjoin(SP500, gold, on=:date, makeunique=true)
-            SP500gold = SP500gold[completecases(SP500gold), :]
-            SP500_gold = SP500gold[!, :value] ./ SP500gold[!, :value_1]
+    # Gold price
+    println("\n************** Gold price (Quandl) **************")
+    gold = get_daily_data_from_quandl(quandl, "LBMA/GOLD", date_plotstart, date_plotend, ["Date", "USD (PM)"], isverbose, nrows_verbose)
+
+    # S&P500 / Gold
+    SP500_gold = calc_two_dataframes(SP500, "/", gold)
     
-#         # Shiller P/E 10 ratio
-#         print("\tShiller P/E 10")
-#         ShillerPE10 = qd.get("MULTPL/SHILLER_PE_RATIO_MONTH", trim_start=date_plotstart, trim_end=date_plotend,
-#                              authtoken=qd_authtoken)
+    # Shiller P/E 10 ratio
+    println("\n************** Shiller P/E 10 (Quandl) **************")
+    ShillerPE10 = get_daily_data_from_quandl(quandl, "MULTPL/SHILLER_PE_RATIO_MONTH", date_plotstart, date_plotend, ["Date", "Value"], isverbose, nrows_verbose)
+
+    # Tobin"s Q ratio
+    # Nonfinancial Corporate Business; Corporate Equities; Liability, Level            
+    println("\n************** Nonfinancial Corporate Business; Corporate Equities; Liability, Level (Fred) **************")
+    equity = get_daily_data_from_fred("MVEONWMVBSNNCB", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    # Nonfinancial Corporate Business; Net Worth, Level
+    println("\n************** Nonfinancial Corporate Business; Net Worth, Level (Fred) **************")
+    networth = get_daily_data_from_fred("TNWMVBSNNCB", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    TobinQ = calc_two_dataframes(equity, "/", networth)
+
+    # Inflation - CPI
+    println("\n************** CPI (Fred) **************")
+    cpi = get_daily_data_from_fred("CPIAUCSL", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    # CPI By Group
+    println("\n************** CPI: Food (Fred) **************")
+    cpi_food = get_daily_data_from_fred("CPIUFDSL", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    println("\n************** CPI: Housing (Fred) **************")
+    cpi_housing = get_daily_data_from_fred("CPIHOSSL", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    println("\n************** CPI: Medical (Fred) **************")
+    cpi_medical = get_daily_data_from_fred("CPIMEDSL", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    println("\n************** CPI: Education (Fred) **************")
+    cpi_education = get_daily_data_from_fred("CUSR0000SAE1", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
-#         # Tobin"s Q ratio
-#         fred = fredapi.Fred(api_key=fred_apikey)
-#         # Nonfinancial Corporate Business; Corporate Equities; Liability, Level
-#         print("\tNonfinancial Corporate Business; Corporate Equities; Liability, Level")
-#         equity = fred.get_series(series_id="MVEONWMVBSNNCB")
-#         # Nonfinancial Corporate Business; Net Worth, Level
-#         print("\tNonfinancial Corporate Business; Net Worth, Level")
-#         networth = fred.get_series(series_id="TNWMVBSNNCB")
-#         TobinQ = equity/networth
+    # Inflation - GDP Deflator
+    println("\n************** GDP Deflator (Fred) **************")
+    gdpdef = get_daily_data_from_fred("GDPDEF", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
-#         # Inflation - CPI
-#         print("\tCPI")
-#         cpi = qd.get("FRED/CPIAUCSL", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
-#         # CPI By Group
-#         print("\tCPI: Food")
-#         cpi_food = qd.get("FRED/CPIUFDSL", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
-#         print("\tCPI: Housing")
-#         cpi_housing = qd.get("FRED/CPIHOSSL", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
-#         print("\tCPI: Medical")
-#         cpi_medical = qd.get("FRED/CPIMEDSL", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
-#         print("\tCPI: Education")
-#         cpi_education = qd.get("FRED/CUSR0000SAE1", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
+    # S&P500 / GDP Deflator
+    SP500_gdpdef = calc_two_dataframes(SP500, "/", gdpdef)
+   
+    # Money Supply - Monetary Base
+    println("\n************** Monetary Base (Fred) **************")
+    MB = get_daily_data_from_fred("BOGMBASEW", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    MB[!, :value] /= 1000  # convert millions of dollars to billions of dollars
     
-#         # Inflation - GDP Deflator
-#         print("\tGDP Deflator")
-#         gdpdef = qd.get("FRED/GDPDEF", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
+    # Money Supply - M2
+    println("\n************** M2 (Fred) **************")
+    M2 = get_daily_data_from_fred("M2", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
-#         # S&P500 / GDP Deflator
-#         SP500_gdpdef = SP500["Close"].reindex(gdpdef.index, method="ffill") / gdpdef.iloc[:, 0]
+    # S&P500 / M2
+    SP500_M2 = calc_two_dataframes(SP500, "/", M2)
     
-#         # Money Supply - Monetary Base
-#         print("\tMonetary Base")
-#         MB = qd.get("FRED/BOGMBASEW", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
-#         MB.iloc[:, 0] /= 1000  # convert millions of dollars to billions of dollars
+    # US Treasury Zero-Coupon Yield Curve
+    println("\n************** US Treasury Zero-Coupon Yield Curve (Quandl) **************")
+    treasury_yield1, treasury_yield15 = get_daily_data_from_quandl(quandl, "FED/SVENY", date_plotstart, date_plotend, ["Date", "SVENY01", "SVENY15"], isverbose, nrows_verbose)
+    # short term interest rate (1 Yr) / long term interest rate (15 Yr)
+    treasury_yield_spread = calc_two_dataframes(treasury_yield1, "/", treasury_yield15)
     
-#         # Money Supply - M2
-#         print("\tM2")
-#         M2 = qd.get("FRED/M2", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
+    # US GDP, billions
+    println("\n************** GDP (Fred) **************")
+    GDP = get_daily_data_from_fred("GDP", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    # Real GDP
+    println("\n************** Real GDP (Fred) **************")
+    RealGDP = get_daily_data_from_fred("GDPC1", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
-#         # S&P500 / M2
-#         SP500_M2 = SP500["Close"].reindex(M2.index, method="ffill") / M2.iloc[:, 0]
+    # S&P500 / GDP
+    SP500_gdp = calc_two_dataframes(SP500, "/", GDP)
     
-#         # US Treasury Zero-Coupon Yield Curve
-#         print("\tUS Treasury Zero-Coupon Yield Curve")
-#         treasury_yield = qd.get("FED/SVENY", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
-#         # short term interest rate (1 Yr) / long term interest rate (15 Yr)
-#         treasury_yield_spread = treasury_yield["SVENY01"]/treasury_yield["SVENY15"]
+    # Deflated GDP
+    GDP_deflated = calc_two_dataframes(GDP, "/", gdpdef)
+    GDP_deflated[!, :value] *= 100
     
-#         # US GDP, billions
-#         print("\tGDP")
-#         GDP = qd.get("FRED/GDP", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
-#         # Real GDP
-#         print("\tReal GDP")
-#         RealGDP = fred.get_series(series_id="GDPC1")
+    # S&P500 / Deflated GDP
+    SP500_deflgdp = calc_two_dataframes(SP500, "/", GDP_deflated)
     
-#         # S&P500 / GDP
-#         SP500_gdp = SP500["Close"].reindex(GDP.index, method="ffill") / GDP.iloc[:, 0]
+    # Excess Monetary Base Explansion: MB / GDP
+    MB_GDP = calc_two_dataframes(MB, "/", GDP)
+    M2_GDP = calc_two_dataframes(M2, "/", GDP)
+    # Normalized to pre-2008 era (1982 to May 2008) which was pretty flat
+    MB_GDP_norm = copy(MB_GDP)
+    MB_GDP_norm[!, :value] = MB_GDP[!, :value] / mean(filter(x -> Date(1982, 1, 1) < x.date < Date(2008, 5, 1), MB_GDP)[!, :value])
     
-#         # Deflated GDP
-#         GDP_deflated = GDP.iloc[:, 0] / gdpdef.iloc[:, 0] * 100
+   
+    # Adjust treasury yield spread using excess monetary base expansion
+    treasury_yield_spread_adj = calc_two_dataframes(treasury_yield_spread, "*", MB_GDP_norm)
     
-#         # S&P500 / Deflated GDP
-#         SP500_deflgdp = SP500["Close"].reindex(GDP_deflated.index, method="ffill") / GDP_deflated
+    # TED spread
+    println("\n************** TED Spread (Fred) **************")
+    ted_spread = get_daily_data_from_fred("TEDRATE", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
-#         # Excess Monetary Base Explansion: MB / GDP
-#         MB_GDP = MB.iloc[:, 0].reindex(GDP.index, method="ffill") / GDP.iloc[:, 0]
-#         M2_GDP = M2.iloc[:, 0].reindex(GDP.index, method="ffill") / GDP.iloc[:, 0]
-#         # Normalized to pre-2008 era (1982 to May 2008) which was pretty flat
-#         MB_GDP_norm = MB_GDP / np.mean(MB_GDP[(MB_GDP.index > pd.Timestamp("1982-01-01")) &
-#                                               (MB_GDP.index < pd.Timestamp("2008-05-01"))])
+    # VIX
+    println("\n************** VIX (Yahoo) **************")
+    vix = get_daily_data_from_yahoo("^VIX", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
-#         # Adjust treasury yield spread using excess monetary base expansion
-#         # treasury_yield_spread_adj = treasury_yield_spread.reindex(MB_GDP_norm.index, method="ffill") * MB_GDP_norm
-#         treasury_yield_spread_adj = treasury_yield_spread * MB_GDP_norm.reindex(treasury_yield_spread.index,
-#                                                                                 method=None).interpolate(method="time")
-#         # TED spread
-#         print("\tTED Spread")
-#         ted_spread = qd.get("FRED/TEDRATE", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
+    # Financial Stress Indices
+    # St. Louis Fed Financial Stress Index
+    println("\n************** St. Louis Fed Financial Stress Index **************")
+    stl_fsi = get_daily_data_from_fred("STLFSI", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    # Kansas City Financial Stress Index
+    println("\n************** Kansas City Financial Stress Index **************")
+    kc_fsi = get_daily_data_from_fred("KCFSI", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    # Cleveland Financial Stress Index
+    println("\n************** Cleveland Financial Stress Index **************")
+    c_fsi = get_daily_data_from_fred("CFSI", date_plotstart, date_plotend, isverbose, nrows_verbose)
+    # Chicago Fed National Financial Conditions Index
+    println("\n************** Chicago Fed National Financial Conditions Index **************")
+    n_fci = get_daily_data_from_fred("NFCI", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
-#         # VIX
-#         print("\tVIX")
-#         vix = qd.get("CBOE/VIX", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
+    # Population
+    println("\n************** US Population (Fred) **************")
+    population = get_daily_data_from_fred("POP", date_plotstart, date_plotend, isverbose, nrows_verbose)  # thousands
+    # Working age population (age 15-64)
+    println("\n************** Working age population (age 15-64) (Fred) **************")
+    wa_population = get_daily_data_from_fred("LFWA64TTUSM647N", date_plotstart, date_plotend, isverbose, nrows_verbose)  # thousands
+    # ratio_white = fred.get_series(series_id="LNU00000003").reindex(population.index,
+    #                                                                method="ffill")/population.iloc[:, 0]*100
+    # ratio_black = fred.get_series(series_id="LNU00000006").reindex(population.index,
+    #                                                                method="ffill")/population.iloc[:, 0]*100
+    # ratio_hispanic = fred.get_series(series_id="LNU00000009").reindex(population.index,
+    #                                                                   method="ffill")/population.iloc[:, 0]*100
+    # ratio_asian = fred.get_series(series_id="LNU00032183").reindex(population.index,
+    #                                                                method="ffill")/population.iloc[:, 0]*100
+    gdp_per_capita = calc_two_dataframes(GDP, "/", population)
+    gdp_per_capita[!, :value] *= (1 / 1e3 / 1e3)   # thousand $ per person
+    realgdp_per_capita = calc_two_dataframes(RealGDP, "/", population)
+    realgdp_per_capita[!, :value] *= (1e9 / 1e3 / 1e3)   # thousand $ per person
     
-#         # Financial Stress Indices
-#         # St. Louis Fed Financial Stress Index
-#         print("\tSt. Louis Fed Financial Stress Index")
-#         stl_fsi = fred.get_series(series_id="STLFSI")
-#         # Kansas City Financial Stress Index
-#         print("\tKansas City Financial Stress Index")
-#         kc_fsi = fred.get_series(series_id="KCFSI")
-#         # Cleveland Financial Stress Index
-#         print("\tCleveland Financial Stress Index")
-#         c_fsi = fred.get_series(series_id="CFSI")
-#         # Chicago Fed National Financial Conditions Index
-#         print("\tChicago Fed National Financial Conditions Index")
-#         n_fci = fred.get_series(series_id="NFCI")
-    
-#         # Population
-#         print("\tUS Population")
-#         population = qd.get("FRED/POP", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)  # thousands
-#         # Working age population (age 15-64)
-#         print("\tWorking age population (age 15-64)")
-#         wa_population = fred.get_series(series_id="LFWA64TTUSM647N")
-#         # ratio_white = fred.get_series(series_id="LNU00000003").reindex(population.index,
-#         #                                                                method="ffill")/population.iloc[:, 0]*100
-#         # ratio_black = fred.get_series(series_id="LNU00000006").reindex(population.index,
-#         #                                                                method="ffill")/population.iloc[:, 0]*100
-#         # ratio_hispanic = fred.get_series(series_id="LNU00000009").reindex(population.index,
-#         #                                                                   method="ffill")/population.iloc[:, 0]*100
-#         # ratio_asian = fred.get_series(series_id="LNU00032183").reindex(population.index,
-#         #                                                                method="ffill")/population.iloc[:, 0]*100
-#         # thousand $
-#         gdp_per_capita = (GDP.iloc[:, 0].reindex(population.index, method="ffill")*1e9) / (population.iloc[:, 0]*1e3)/1e3
-#         realgdp_per_capita = (RealGDP.reindex(population.index, method="ffill")*1e9) / (population.iloc[:, 0]*1e3)/1e3
-    
+   
 #         # Labor Market
 #         # Civilian Employment-Population ratio
-#         print("\tCivilian Employment-Population ratio")
+#         println("\n************** Civilian Employment-Population ratio **************")
 #         epr = qd.get("FRED/EMRATIO", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
 #         # Civilian Unemployment Rate
-#         print("\tCivilian Unemployment Rate")
+#         println("\n************** Civilian Unemployment Rate **************")
 #         uer = qd.get("FRED/UNRATE", trim_start=date_plotstart, trim_end=date_plotend, authtoken=qd_authtoken)
 #         # Civilian Labor Force Participation Rate
-#         print("\tCivilian Labor Force Participation Rate")
+#         println("\n************** Civilian Labor Force Participation Rate **************")
 #         lfpr = fred.get_series(series_id="CIVPART")
     
 #         # S&P/Case-Shiller Housing Indexes
@@ -236,7 +299,7 @@ function main()
     
 #         caseshiller = dict()
 #         for city in cities_of_interest
-#             print("\tCase Shiller Index: " + city)
+#             println("\n************** Case Shiller Index: " * city * " **************")
 #             fn = fn = "./MarketBigPictureWatch/CaseShiller_{:s}.xls".format(city)
 #             open(fn, "wb") do f
 #                 response = requests.get("http://us.spindices.com/idsexport/file.xls?hostIdentifier=48190c8c-42c4-46af-"
@@ -283,118 +346,107 @@ function main()
     
 #         futures_prices = dict()
 #         for comdty in futures_underlying
-#             print("\tFutures: " + comdty)
+#             println("\n************** Futures: " * comdty * " **************")
 #             tmp = qd.get("CHRIS/" + futures_contracts[comdty], trim_start=date_future_plotstart_long, trim_end=date_plotend,
 #                          authtoken=qd_authtoken).loc[:, "Settle"]
 #             tmp[tmp == 0] = np.nan
 #             futures_prices[comdty] = tmp.dropna()
 #         end
     
-            flag_downloaded = true
-        catch ex
-            println("\nException: ", ex, "\n")
-            sleep(2)
-        end
+    print("\nAll downloads finished!\n")
+    nfig = 0
+    #########################################################################
+    # Plots
 
-        if flag_downloaded
-            print("\nAll downloads finished!\n")
-            nfig = 0
-            #########################################################################
-            # Plots
-        
-            figure(facecolor="w", figsize=figsize, dpi=dpi)
+    figure(facecolor="w", figsize=figsize, dpi=dpi)
+
+    nrows = 3
+    ncols = 2
+
+    #...........................
+    todaystr = Dates.format(today(), fmt)
+
+    nplot = 0
+
+    nplot += 1
+    ax = subplot(nrows, ncols, nplot)
+    ax.plot(SP500[!, :date], SP500[!, :value], "b-", label="S&P500")
+    ax.set_xlim([date_plotstart, date_plotend])
+    ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
+    ax2 = ax.twinx()
+    ax2.plot(gold[!, :date], gold[!, :value], "r-", label="Gold")
+    ax2.set_ylabel("USD/OZ")
+    ax2.set_xlim([date_plotstart, date_plotend])
+    ax2.legend(prop=Dict("size" => legend_fontsize), loc="lower right")
+    grid(true)
+    PyPlot.title("Stock and Gold as of " * todaystr)
+
+    nplot += 1
+    ax = subplot(nrows, ncols, nplot)
+    ax.plot(SP500_gold[!, :date], SP500_gold[!, :ratio], "b-")
+    ax.set_xlim([date_plotstart, date_plotend])
+    # ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
+    grid(true)
+    PyPlot.title("S&P500 / Gold as of " * todaystr)
+
+    #...........................
+
+    nplot += 1
+    ax = subplot(nrows, ncols, nplot)
+    ax.plot(cpi[!, :date], cpi[!, :value], ":", color="blue", linewidth=4, label="CPI")
+    ax.plot(cpi_food[!, :date], cpi_food[!, :value], "-", color="green", label="CPI:Food")
+    ax.plot(cpi_housing[!, :date], cpi_housing[!, :value], "-", color="aqua", label="CPI:Housing")
+    ax.plot(cpi_medical[!, :date], cpi_medical[!, :value], "-", color="magenta", label="CPI:Medical")
+    ax.plot(cpi_education[!, :date], cpi_education[!, :value], "-", color="gold", label="CPI:Education")
+    ax.plot(gdpdef[!, :date], gdpdef[!, :value], ":", color="red", linewidth=4, label="GDP Deflator")
+    ax.set_xlim([date_plotstart, date_plotend])
+    ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
+    plt.grid(true)
+    plt.title("Inflation as of " * todaystr)
     
-            nrows = 3
-            ncols = 2
-        
-            #...........................
-            todaystr = Dates.format(today(), fmt)
-    
-            nplot = 0
-        
-            nplot += 1
-            ax = subplot(nrows, ncols, nplot)
-            ax.plot(SP500[!, :date], SP500[!, :value], "b-", label="S&P500")
-            ax.set_xlim([date_plotstart, date_plotend])
-            ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
-            ax2 = ax.twinx()
-            ax2.plot(gold[!, :date], gold[!, :value], "r-", label="Gold")
-            
-            ax2.set_ylabel("USD/OZ")
-            ax2.set_xlim([date_plotstart, date_plotend])
-            ax2.legend(prop=Dict("size" => legend_fontsize), loc="lower right")
-            grid(true)
-            PyPlot.title("Stock and Gold as of " * todaystr)
-        
-            nplot += 1
-            ax = plt.subplot(nrows, ncols, nplot)
-            ax.plot(SP500gold[!, :date], SP500_gold, "b-")
-            ax.set_xlim([date_plotstart, date_plotend])
-            # ax.legend(prop={"size": legend_fontsize}, loc="upper left")
-            grid(true)
-            PyPlot.title("S&P500 / Gold as of " * todaystr)
-        
-#         #...........................
-    
-#         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
-#         ax.plot(cpi.index, cpi.iloc[:, 0], ":", color="blue", linewidth=4, label="CPI")
-#         ax.plot(cpi_food.index, cpi_food.iloc[:, 0], "-", color="green", label="CPI:Food")
-#         ax.plot(cpi_housing.index, cpi_housing.iloc[:, 0], "-", color="aqua", label="CPI:Housing")
-#         ax.plot(cpi_medical.index, cpi_medical.iloc[:, 0], "-", color="magenta", label="CPI:Medical")
-#         ax.plot(cpi_education.index, cpi_education.iloc[:, 0], "-", color="gold", label="CPI:Education")
-#         ax.plot(gdpdef.index, gdpdef.iloc[:, 0], ":", color="red", linewidth=4, label="GDP Deflator")
-#         ax.set_xlim([date_plotstart, date_plotend])
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
-#         # ax2 = ax.twinx()
-#         # ax2.set_xlim([date_plotstart, date_plotend])
-#         # ax2.legend(prop={"size": legend_fontsize}, loc="lower right")
-#         plt.grid(True)
-#         plt.title("Inflation as of %s" % today)
-    
-#         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
-#         ax.plot(SP500_gdp.index, np.array(SP500_gdp), "b-", label="S&P500 / GDP")
-#         ax.set_xlim([date_plotstart, date_plotend])
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
-#         ax2 = ax.twinx()
-#         ax2.plot(SP500_M2.index, np.array(SP500_M2), "r-", label="S&P500 / M2")
-#         ax2.set_xlim([date_plotstart, date_plotend])
-#         ax2.legend(prop={"size": legend_fontsize}, loc="upper right")
-#         plt.title("S&P500 / M2 as of %s" % today)
-#         plt.grid(True)
-#         plt.title("S&P500 vs. GDP and M2 as of %s" % today)
-    
-#         #...........................
+    nplot += 1
+    ax = subplot(nrows, ncols, nplot)
+    ax.plot(SP500_gdp[!, :date], SP500_gdp[!, :value], "b-", label="S&P500 / GDP")
+    ax.set_xlim([date_plotstart, date_plotend])
+    ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
+    ax2 = ax.twinx()
+    ax2.plot(SP500_M2[!, :date], SP500_M2[!, :value], "r-", label="S&P500 / M2")
+    ax2.set_xlim([date_plotstart, date_plotend])
+    ax2.legend(prop=Dict("size" => legend_fontsize), loc="upper right")
+    plt.title("S&P500 / M2 as of " * todaystr)
+    plt.grid(true)
+    plt.title("S&P500 vs. GDP and M2 as of " * todaystr)
+
+    #...........................
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         ax.plot(MB.index, MB.iloc[:, 0], "b-", label="MB")
 #         ax.plot(M2.index, M2.iloc[:, 0], "r-", label="M2")
 #         ax.plot(GDP.index, GDP.iloc[:, 0], "-", label="GDP")
 #         ax.plot(RealGDP.index, np.array(RealGDP), "-", color="darkgreen", label="Real GDP (2009$)")
 #         ax.set_xlim([date_plotstart, date_plotend])
 #         ax.set_ylabel("Bln$")
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
 #         ax2 = ax.twinx()
 #         ax2.plot(MB_GDP.index, np.array(MB_GDP), "m--", label="MB/GDP")
 #         ax2.plot(M2_GDP.index, np.array(M2_GDP), "c--", label="M2/GDP")
 #         ax2.set_xlim([date_plotstart, date_plotend])
-#         ax2.legend(prop={"size": legend_fontsize}, loc="upper center")
-#         plt.grid(True)
-#         plt.title("Money Supply and GDP as of %s" % today)
+#         ax2.legend(prop=Dict("size" => legend_fontsize), loc="upper center")
+#         plt.grid(true)
+#         plt.title("Money Supply and GDP as of " * todaystr)
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         ax.plot(ShillerPE10.index, ShillerPE10.iloc[:, 0], "b-", label="Shiller P/E 10")
 #         ax.set_xlim([date_plotstart, date_plotend])
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
 #         ax2 = ax.twinx()
 #         ax2.plot(TobinQ.index, np.array(TobinQ), "r-", label="Tobin's Q")
 #         ax2.set_xlim([date_plotstart, date_plotend])
-#         ax2.legend(prop={"size": legend_fontsize}, loc="upper right")
-#         plt.grid(True)
-#         plt.title("Stock Market Valuation - Ratios as of %s" % today)
+#         ax2.legend(prop=Dict("size" => legend_fontsize), loc="upper right")
+#         plt.grid(true)
+#         plt.title("Stock Market Valuation - Ratios as of " * todaystr)
     
 #         nfig += 1
 #         plt.savefig("./MarketBigPictureWatch/BigPicture{:d}.png".format(nfig))
@@ -409,7 +461,7 @@ function main()
     
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         ax.plot(treasury_yield.index, treasury_yield["SVENY01"], "-", color="red", linewidth=0.5, label="1 Yr")
 #         ax.plot(treasury_yield.index, treasury_yield["SVENY02"], "-", color="orange", linewidth=0.5, label="2 Yr")
 #         ax.plot(treasury_yield.index, treasury_yield["SVENY05"], "-",  color="yellow", linewidth=0.5, label="5 Yr")
@@ -417,18 +469,18 @@ function main()
 #         ax.plot(treasury_yield.index, treasury_yield["SVENY20"], "-",  color="blue", linewidth=0.5, label="20 Yr")
 #         ax.set_xlim([date_plotstart, date_plotend])
 #         ax.set_ylabel("%")
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper right")
-#         plt.grid(True)
-#         plt.title("Treasury Zero-Coupon Yield as of %s" % today)
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="upper right")
+#         plt.grid(true)
+#         plt.title("Treasury Zero-Coupon Yield as of " * todaystr)
     
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         ax.plot(SP500.index, SP500["Close"], "-", color="blue", label="S&P500")
 #         ax.set_xlim([date_plotstart, date_plotend])
 #         # ax.set_yscale("log")
 #         ax.yaxis.set_major_formatter(fmt)
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
 #         ax2 = ax.twinx()
 #         ax2.plot(treasury_yield_spread.index, np.array(treasury_yield_spread), "-",
 #                  color="magenta", linewidth=1, label="1Yr/15Yr")
@@ -437,39 +489,39 @@ function main()
 #         ax2.plot([treasury_yield_spread.index[0], treasury_yield_spread.index[-1]], [1, 1], "-",
 #                  color="red")
 #         ax2.set_xlim([date_plotstart, date_plotend])
-#         ax2.legend(prop={"size": legend_fontsize}, loc="lower center")
-#         plt.grid(True)
-#         plt.title("Stock Market and Interest Rate Structure as of %s" % today)
+#         ax2.legend(prop=Dict("size" => legend_fontsize), loc="lower center")
+#         plt.grid(true)
+#         plt.title("Stock Market and Interest Rate Structure as of " * todaystr)
     
 #         #...........................
     
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         # ax.plot(SP500.index, SP500["Close"], "-", color="blue", label="S&P500")
 #         ax.plot(vix.index, vix["VIX Close"], "-", color="blue", label="VIX")
 #         ax.set_xlim([date_plotstart, date_plotend])
 #         # ax.set_yscale("log")
 #         ax.yaxis.set_major_formatter(fmt)
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
 #         ax2 = ax.twinx()
 #         ax2.plot(ted_spread.index, ted_spread.iloc[:, 0], "-",
 #                  color="magenta", linewidth=1, label="TED Spread")
 #         ax2.set_xlim([date_plotstart, date_plotend])
 #         ax2.set_ylabel("%")
 #         # ax.set_yscale("log")
-#         ax2.legend(prop={"size": legend_fontsize}, loc="upper right")
-#         plt.grid(True)
-#         plt.title("Financial Stress Indicators (1) as of %s" % today)
+#         ax2.legend(prop=Dict("size" => legend_fontsize), loc="upper right")
+#         plt.grid(true)
+#         plt.title("Financial Stress Indicators (1) as of " * todaystr)
     
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         ax.plot(SP500.index, SP500["Close"], "-", color="blue", label="S&P500")
 #         ax.set_xlim([date_plotstart, date_plotend])
 #         # ax.set_yscale("log")
 #         ax.yaxis.set_major_formatter(fmt)
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
 #         ax2 = ax.twinx()
 #         ax2.plot(stl_fsi.index, np.array(stl_fsi), "-",
 #                  color="red", linewidth=1, label="St. Louis Fed FSI")
@@ -477,30 +529,30 @@ function main()
 #                  color="green", linewidth=1, label="Kansas City FSI")
 #         ax2.set_xlim([date_plotstart, date_plotend])
 #         # ax.set_yscale("log")
-#         ax2.legend(prop={"size": legend_fontsize}, loc="upper center")
-#         plt.grid(True)
-#         plt.title("Financial Stress Indicators (2) as of %s" % today)
+#         ax2.legend(prop=Dict("size" => legend_fontsize), loc="upper center")
+#         plt.grid(true)
+#         plt.title("Financial Stress Indicators (2) as of " * todaystr)
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         ted_spread["vix"] = vix["VIX Close"]
 #         ted_spread = ted_spread.dropna()
 #         ax.plot(ted_spread["vix"], ted_spread.iloc[:, 0], "b.")
 #         ax.set_xlabel("VIX")
 #         ax.set_ylabel("TED Spread")
 #         corr = np.corrcoef(np.array(ted_spread["vix"]), np.array(ted_spread.iloc[:, 0]))[0, 1]
-#         plt.grid(True)
+#         plt.grid(true)
 #         plt.title("VIX ~ TED Spread, corr = {0:.2f}%".format(corr*100))
     
 #         #...........................
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         ax.plot(SP500.index, SP500["Close"], "-", color="blue", label="S&P500")
 #         ax.set_xlim([date_plotstart, date_plotend])
 #         # ax.set_yscale("log")
 #         ax.yaxis.set_major_formatter(fmt)
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
 #         ax2 = ax.twinx()
 #         ax2.plot(c_fsi.index, np.array(c_fsi), "-",
 #                  color="red", linewidth=1, label="Cleveland FSI")
@@ -508,9 +560,9 @@ function main()
 #                  color="green", linewidth=1, label="Chicago Fed National FCI")
 #         ax2.set_xlim([date_plotstart, date_plotend])
 #         # ax.set_yscale("log")
-#         ax2.legend(prop={"size": legend_fontsize}, loc="upper center")
-#         plt.grid(True)
-#         plt.title("Financial Stress Indicators (3) as of %s" % today)
+#         ax2.legend(prop=Dict("size" => legend_fontsize), loc="upper center")
+#         plt.grid(true)
+#         plt.title("Financial Stress Indicators (3) as of " * todaystr)
     
 #         nfig += 1
 #         plt.savefig("./MarketBigPictureWatch/BigPicture{:d}.png".format(nfig))
@@ -523,7 +575,7 @@ function main()
 #         nplot = 0
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         ax.plot(population.index, population.iloc[:, 0]/1e6, "--",
 #                 color="blue", linewidth=1, label="Population")
 #         ax.plot(wa_population.index, np.array(wa_population)/1e9, "--",
@@ -532,7 +584,7 @@ function main()
 #         ax.set_xlim([date_plotstart, date_plotend])
 #         # ax.set_yscale("log")
 #         ax.yaxis.set_major_formatter(fmt)
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
 #         ax2 = ax.twinx()
 #         ax2.plot(gdp_per_capita.index, np.array(gdp_per_capita), "-",
 #                  color="red", linewidth=1, label="GDP Per Capita")
@@ -541,12 +593,12 @@ function main()
 #         ax2.set_ylabel("K$")
 #         ax2.set_xlim([date_plotstart, date_plotend])
 #         # ax.set_yscale("log")
-#         ax2.legend(prop={"size": legend_fontsize}, loc="lower right")
-#         plt.grid(True)
-#         plt.title("Population as of %s" % today)
+#         ax2.legend(prop=Dict("size" => legend_fontsize), loc="lower right")
+#         plt.grid(true)
+#         plt.title("Population as of " * todaystr)
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         ax.plot(epr.index, epr.iloc[:, 0], "-",
 #                 color="green", linewidth=1, label="Employment-Population Ratio")
 #         ax.plot(lfpr.index, np.array(lfpr), "-",
@@ -555,19 +607,19 @@ function main()
 #         ax.set_ylabel("%")
 #         # ax.set_yscale("log")
 #         ax.yaxis.set_major_formatter(fmt)
-#         ax.legend(prop={"size": legend_fontsize}, loc="lower left")
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="lower left")
 #         ax2 = ax.twinx()
 #         ax2.plot(uer.index, uer.iloc[:, 0], "-",
 #                  color="red", linewidth=1, label="Unemployment Rate")
 #         ax2.set_xlim([date_plotstart, date_plotend])
 #         ax2.set_ylabel("%")
 #         # ax.set_yscale("log")
-#         ax2.legend(prop={"size": legend_fontsize}, loc="upper center")
-#         plt.grid(True)
-#         plt.title("Labor Market Condition as of %s" % today)
+#         ax2.legend(prop=Dict("size" => legend_fontsize), loc="upper center")
+#         plt.grid(true)
+#         plt.title("Labor Market Condition as of " * todaystr)
     
 #         nplot += 1
-#         ax = plt.subplot(nrows, ncols, nplot)
+#         ax = subplot(nrows, ncols, nplot)
 #         for (n, city) in enumerate(cities_of_interest)
 #             ax.plot(caseshiller[city].index, np.array(caseshiller[city].ix[:, 1]), "-", color=colors[n],
 #                     linewidth =  city in ["National", "Chicago", "SanFrancisco"] ? 3 : 1, label=city)
@@ -575,9 +627,9 @@ function main()
 #         ax.set_xlim([date_plotstart, date_plotend])
 #         # ax.set_yscale("log")
 #         ax.yaxis.set_major_formatter(fmt)
-#         ax.legend(prop={"size": legend_fontsize}, loc="upper left")
-#         plt.grid(True)
-#         plt.title("S&P/Case-Shiller Home Price Indices as of %s" % today)
+#         ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
+#         plt.grid(true)
+#         plt.title("S&P/Case-Shiller Home Price Indices as of " * todaystr)
     
 #         nfig += 1
 #         plt.savefig("./MarketBigPictureWatch/BigPicture{:d}.png".format(nfig))
@@ -591,13 +643,13 @@ function main()
     
 #         for comdty in futures_underlying
 #             nplot += 1
-#             ax = plt.subplot(nrows, ncols, nplot)
+#             ax = subplot(nrows, ncols, nplot)
 #             ax.plot(futures_prices[comdty].index, np.array(futures_prices[comdty]), "-",
 #                     color="blue", linewidth=1, label=comdty)
 #             ax.set_xlim([date_future_plotstart_long, date_plotend])
 #             ax.yaxis.set_major_formatter(fmt)
-#             ax.legend(prop={"size": legend_fontsize}, loc=0)
-#             plt.grid(True)
+#             ax.legend(prop=Dict("size" => legend_fontsize), loc=0)
+#             plt.grid(true)
 #             if nplot == Int(round(ncols/2+0.01, digits=0))
 #                 ax.set_title("Futures - Long Term ({:d} year{:s}) as of {:s}".format(future_yrs_long, future_yrs_long > 1 ? "s" : "", today))
 #             end    
@@ -616,15 +668,15 @@ function main()
     
 #         for comdty in futures_underlying
 #             nplot += 1
-#             ax = plt.subplot(nrows, ncols, nplot)
+#             ax = subplot(nrows, ncols, nplot)
 #             ind = ((futures_prices[comdty].index >= date_future_plotstart_short) & (futures_prices[comdty].index <=
 #                                                                                     date_plotend))
 #             ax.plot(futures_prices[comdty].index[ind], np.array(futures_prices[comdty])[ind], "-",
 #                     color="red", linewidth=1, label=comdty)
 #             ax.set_xlim([date_future_plotstart_short, date_plotend])
 #             ax.yaxis.set_major_formatter(fmt)
-#             ax.legend(prop={"size": legend_fontsize}, loc=0)
-#             plt.grid(True)
+#             ax.legend(prop=Dict("size" => legend_fontsize), loc=0)
+#             plt.grid(true)
 #             if nplot == int(np.round(ncols/2+0.01))
 #                 ax.set_title("Futures - Short Term ({:d} year{:s}) as of {:s}".format(future_yrs_short, future_yrs_short > 1 ? "s" : "", today))
 #             end
@@ -639,18 +691,11 @@ function main()
 #         print("Plots opening in new windows.")
     
 #         plt.show()
-        end
-
-    end
-
-    if (! flag_downloaded) && nattempts >= maxattempts
-        println("\nData download failed. Please try later or debug.")
-    end
 
 end
 
-println("\nMain script started...")
+println("\n************** Main script started...")
 main()
-println("\nMain script finished.")
+println("\n************** Main script finished.")
 
 
