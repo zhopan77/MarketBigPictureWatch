@@ -1,6 +1,6 @@
 This Julia script (MarketBigPictureWatch_run.jl) downloads key economic and market data from Fred, Yahoo, and Quandl.
 
-Plots are generated using these data and PyPlot to show big pictures to show how things are going, particularly in the US.
+Plots are generated using these data and PyPlot to show big pictures of how things are going economically, particularly in the US.
 
 Requires Julia 1.x. 
 
