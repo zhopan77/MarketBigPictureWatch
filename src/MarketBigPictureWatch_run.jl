@@ -98,16 +98,17 @@ function calc_two_dataframes(data1::DataFrame, operator::String, data2::DataFram
     data = innerjoin(data1, data2, on=:date, makeunique=true)
     data = data[completecases(data), :]
     if operator == "/"
-        data[!, :ratio] = data[!, :value] ./ data[!, :value_1]
+        data[!, :value] = data[!, :value] ./ data[!, :value_1]
     elseif operator == "*"
-        data[!, :ratio] = data[!, :value] .* data[!, :value_1]
+        data[!, :value] = data[!, :value] .* data[!, :value_1]
     elseif operator == "+"
-        data[!, :ratio] = data[!, :value] .+ data[!, :value_1]
+        data[!, :value] = data[!, :value] .+ data[!, :value_1]
     elseif operator == "-"
-        data[!, :ratio] = data[!, :value] .- data[!, :value_1]
+        data[!, :value] = data[!, :value] .- data[!, :value_1]
     else
         error("Unknown dataframe operator $operator")
     end
+    data = data[!, ["date", "value"]]
 
     return data
 end
@@ -176,12 +177,12 @@ if !isdownloaded
     # S&P500 / GDP Deflator
     SP500_gdpdef = calc_two_dataframes(SP500, "/", gdpdef)
 
-    # Money Supply - Monetary Base
+    # Money Supply - Monetary Base, millions of dollars
     println("\n************** Monetary Base (Fred) **************")
     MB = get_daily_data_from_fred("BOGMBASEW", date_plotstart, date_plotend, isverbose, nrows_verbose)
     MB[!, :value] /= 1000  # convert millions of dollars to billions of dollars
     
-    # Money Supply - M2
+    # Money Supply - M2, billions of dollars
     println("\n************** M2 (Fred) **************")
     M2 = get_daily_data_from_fred("M2", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
@@ -195,10 +196,10 @@ if !isdownloaded
     # short term interest rate (1 Yr) / long term interest rate (15 Yr)
     treasury_yield_spread = calc_two_dataframes(treasury_yield1, "/", treasury_yield15)
     
-    # US GDP, billions
+    # US GDP, billions of dollars
     println("\n************** GDP (Fred) **************")
     GDP = get_daily_data_from_fred("GDP", date_plotstart, date_plotend, isverbose, nrows_verbose)
-    # Real GDP
+    # Real GDP, Billions of Chained 2012 Dollars,
     println("\n************** Real GDP (Fred) **************")
     RealGDP = get_daily_data_from_fred("GDPC1", date_plotstart, date_plotend, isverbose, nrows_verbose)
     
@@ -247,10 +248,12 @@ if !isdownloaded
     
     # Population
     println("\n************** US Population (Fred) **************")
-    population = get_daily_data_from_fred("POP", date_plotstart, date_plotend, isverbose, nrows_verbose)  # thousands
+    population = get_daily_data_from_fred("POP", date_plotstart, date_plotend, isverbose, nrows_verbose)  # unit: thousands of persons
     # Working age population (age 15-64)
     println("\n************** Working age population (age 15-64) (Fred) **************")
-    wa_population = get_daily_data_from_fred("LFWA64TTUSM647N", date_plotstart, date_plotend, isverbose, nrows_verbose)  # thousands
+    wa_population = get_daily_data_from_fred("LFWA64TTUSM647N", date_plotstart, date_plotend, isverbose, nrows_verbose)  # unit: persons
+    wa_population[!, :value] /= 1000  # convert unit to thousands of persons
+    # population values below are all in thousands of persons
     println("\n************** White population (Fred) **************")
     ratio_white = calc_two_dataframes(get_daily_data_from_fred("LNU00000003", date_plotstart, date_plotend, isverbose, nrows_verbose), "/", population)
     println("\n************** Black population (Fred) **************")
@@ -259,10 +262,10 @@ if !isdownloaded
     ratio_hispanic = calc_two_dataframes(get_daily_data_from_fred("LNU00000009", date_plotstart, date_plotend, isverbose, nrows_verbose), "/", population)
     println("\n************** Asian population (Fred) **************")
     ratio_asian = calc_two_dataframes(get_daily_data_from_fred("LNU00032183", date_plotstart, date_plotend, isverbose, nrows_verbose), "/", population)
-    gdp_per_capita = calc_two_dataframes(GDP, "/", population)
-    gdp_per_capita[!, :value] *= (1 / 1e3 / 1e3)   # thousand $ per person
+    gdp_per_capita = calc_two_dataframes(GDP, "/", population)  # billions of dollars per thousands of persons
+    gdp_per_capita[!, :value] *= (1e6 / 1e3)   # thousand $ per person
     realgdp_per_capita = calc_two_dataframes(RealGDP, "/", population)
-    realgdp_per_capita[!, :value] *= (1e9 / 1e3 / 1e3)   # thousand $ per person
+    realgdp_per_capita[!, :value] *= (1e6 / 1e3)   # thousand $ per person
 
     # Labor Market
     # Civilian Employment-Population ratio
@@ -340,7 +343,7 @@ if isdownloaded
 
     nplot += 1
     ax = subplot(nrows, ncols, nplot)
-    ax.plot(SP500_gold[!, :date], SP500_gold[!, :ratio], "b-")
+    ax.plot(SP500_gold[!, :date], SP500_gold[!, :value], "b-")
     ax.set_xlim([date_plotstart, date_plotend])
     # ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
     grid(true, linestyle=":")
@@ -538,9 +541,9 @@ if isdownloaded
     ax = subplot(nrows, ncols, nplot)
     ax.plot(population[!, :date], population[!, :value]/1e6, "--",
             color="blue", linewidth=1, label="Population")
-    ax.plot(wa_population[!, :date], wa_population[!, :value]/1e9, "--",
+    ax.plot(wa_population[!, :date], wa_population[!, :value]/1e6, "--",
             color="magenta", linewidth=1, label="Working Age (15-64) Population")
-    ax.set_ylabel("Bln")
+    ax.set_ylabel("Bln Persons")
     ax.set_xlim([date_plotstart, date_plotend])
     # ax.set_yscale("log")
     # ax.yaxis.set_major_formatter(fmt)
