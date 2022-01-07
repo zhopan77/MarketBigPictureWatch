@@ -353,16 +353,26 @@ if isdownloaded
 
     nplot += 1
     ax = subplot(nrows, ncols, nplot)
-    ax.plot(cpi[!, :date], cpi[!, :value], ":", color="blue", linewidth=4, label="CPI")
-    ax.plot(cpi_food[!, :date], cpi_food[!, :value], "-", color="green", label="CPI:Food")
-    ax.plot(cpi_housing[!, :date], cpi_housing[!, :value], "-", color="aqua", label="CPI:Housing")
-    ax.plot(cpi_medical[!, :date], cpi_medical[!, :value], "-", color="magenta", label="CPI:Medical")
-    ax.plot(cpi_education[!, :date], cpi_education[!, :value], "-", color="gold", label="CPI:Education")
-    ax.plot(gdpdef[!, :date], gdpdef[!, :value], ":", color="red", linewidth=4, label="GDP Deflator")
+    baseline_yearsago = 10
+    baseline_year = year(Dates.today()) - baseline_yearsago
+    baseline_date = Date(baseline_year, month(Dates.today()), day(Dates.today()))
+    baseline_cpi = filter(x->x.date >= baseline_date, cpi)[1, :value]
+    ax.plot(cpi[!, :date], cpi[!, :value] / baseline_cpi * 100, ":", color="blue", linewidth=4, label="CPI")
+    baseline_cpi_food = filter(x->x.date >= baseline_date, cpi_food)[1, :value]
+    ax.plot(cpi_food[!, :date], cpi_food[!, :value] / baseline_cpi_food * 100, "-", color="green", label="CPI:Food")
+    baseline_cpi_housing = filter(x->x.date >= baseline_date, cpi_housing)[1, :value]
+    ax.plot(cpi_housing[!, :date], cpi_housing[!, :value] / baseline_cpi_housing * 100, "-", color="aqua", label="CPI:Housing")
+    baseline_cpi_medical = filter(x->x.date >= baseline_date, cpi_medical)[1, :value]
+    ax.plot(cpi_medical[!, :date], cpi_medical[!, :value] / baseline_cpi_medical * 100, "-", color="magenta", label="CPI:Medical")
+    baseline_cpi_education = filter(x->x.date >= baseline_date, cpi_education)[1, :value]
+    ax.plot(cpi_education[!, :date], cpi_education[!, :value] / baseline_cpi_education * 100, "-", color="gold", label="CPI:Education")
+    baseline_gdpdef = filter(x->x.date >= baseline_date, gdpdef)[1, :value]
+    ax.plot(gdpdef[!, :date], gdpdef[!, :value] / baseline_gdpdef * 100, ":", color="red", linewidth=4, label="GDP Deflator")
     ax.set_xlim([date_plotstart, date_plotend])
+    ax.set_ylabel("Index")
     ax.legend(prop=Dict("size" => legend_fontsize), loc="upper left")
     grid(true, linestyle=":")
-    plt.title("Inflation as of " * todaystr)
+    plt.title("Inflation Index ($baseline_yearsago years ago = 100) as of " * todaystr)
     
     nplot += 1
     ax = subplot(nrows, ncols, nplot)
