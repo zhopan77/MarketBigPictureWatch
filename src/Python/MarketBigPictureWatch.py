@@ -3,11 +3,9 @@
 import os
 from datetime import date, datetime, timedelta
 
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import quandl
 import yfinance as yf
 from pandas_datareader import data as pdr
 import requests
