@@ -300,9 +300,17 @@ if not isdownloaded:
         treasury_yield_spread, "*", MB_GDP_norm
     )
 
-    # TED spread
+    # TED spread is discontinued as LIBOR is gone in 2021
+    # use SOFR-T-bill spread instead
+    # Keep TED spread for historical reference
     print("\n************** TED Spread (Fred) **************")
-    ted_spread = get_daily_data_from_fred("TEDRATE", date_plotstart, date_plotend, "TED Spread")
+    tedspread = get_daily_data_from_fred("TEDRATE", date_plotstart, date_plotend, "TED Spread")
+    print("\n************** SOFR (Fred) **************")
+    SOFR = get_daily_data_from_fred("SOFR", date_plotstart, date_plotend, "SOFR")
+    print("\n************** 3-month T-bill (Fred) **************")
+    t3m = get_daily_data_from_fred("DGS3MO", date_plotstart, date_plotend, "3-month T-bill")
+
+    SOFR_t3m = calc_two_dataframes(SOFR, "-", t3m)
 
     # VIX
     print("\n************** VIX (Yahoo) **************")
@@ -310,16 +318,16 @@ if not isdownloaded:
 
     # Financial stress indices
     print("\n************** St. Louis Fed Financial Stress Index **************")
-    stl_fsi = get_daily_data_from_fred("STLFSI", date_plotstart, date_plotend, "STLFSI")
+    stl_fsi = get_daily_data_from_fred("STLFSI4", date_plotstart, date_plotend, "STLFSI4")
 
     print("\n************** Kansas City Financial Stress Index **************")
     kc_fsi = get_daily_data_from_fred("KCFSI", date_plotstart, date_plotend, "KCFSI")
 
     print("\n************** Cleveland Financial Stress Index **************")
-    c_fsi = get_daily_data_from_fred("CFSI", date_plotstart, date_plotend, "CFSI")
+    c_fsi = get_daily_data_from_fred("CFSI", date_plotstart, date_plotend, "CFSI") # discontinued
 
-    print("\n************** Chicago Fed National Financial Conditions Index **************")
-    n_fci = get_daily_data_from_fred("NFCI", date_plotstart, date_plotend, "NFCI")
+    print("\n************** Chicago Fed Adjusted National Financial Conditions Index **************")
+    anfci = get_daily_data_from_fred("ANFCI", date_plotstart, date_plotend, "ANFCI")
 
     # Population
     print("\n************** US Population (Fred) **************")
@@ -497,12 +505,13 @@ if not isdownloaded:
         "SP500_deflgdp": SP500_deflgdp,
         "MB_GDP": MB_GDP,
         "M2_GDP": M2_GDP,
-        "ted_spread": ted_spread,
+        "tedspread": tedspread,
+        "SOFR_t3m": SOFR_t3m,
         "vix": vix,
         "stl_fsi": stl_fsi,
         "kc_fsi": kc_fsi,
         "c_fsi": c_fsi,
-        "n_fci": n_fci,
+        "anfci": anfci,
         "population": population,
         "wa_population": wa_population,
         "ratio_white": ratio_white,
@@ -840,12 +849,20 @@ if isdownloaded:
     ax.legend(prop={"size": legend_fontsize}, loc="upper left")
     ax2 = ax.twinx()
     ax2.plot(
-        all_data["ted_spread"]["date"],
-        all_data["ted_spread"]["value"],
+        all_data["tedspread"]["date"],
+        all_data["tedspread"]["value"],
         "-",
         color="magenta",
         linewidth=1,
-        label="TED Spread",
+        label="TED Spread (discontinued)",
+    )
+    ax2.plot(
+        all_data["SOFR_t3m"]["date"],
+        all_data["SOFR_t3m"]["value"],
+        "-",
+        color="purple",
+        linewidth=1,
+        label="SOFR-T-bill Spread",
     )
     ax2.set_xlim([xlim_start, xlim_end])
     ax2.set_ylabel("%")
@@ -886,21 +903,23 @@ if isdownloaded:
     ax.grid(True, linestyle=":")
     plt.title(f"Financial Stress Indicators (2) as of {todaystr}")
 
-    nplot += 1
-    ax = plt.subplot(nrows, ncols, nplot)
-    tedspreadvix = pd.merge(
-        all_data["ted_spread"],
-        all_data["vix"],
-        on="date",
-        how="inner",
-        suffixes=("", "_1"),
-    )
-    ax.plot(tedspreadvix["value_1"], tedspreadvix["value"], "b.")
-    ax.set_xlabel("VIX")
-    ax.set_ylabel("TED Spread")
-    corr = tedspreadvix["value_1"].corr(tedspreadvix["value"])
-    ax.grid(True, linestyle=":")
-    plt.title(f"VIX ~ TED Spread, corr = {round(corr * 100, 2)}%")
+    ## this correlation plot has no meaning now -it seems SOFR-T-bill spread is leading VIX, not
+    ## correlating
+    # nplot += 1
+    # ax = plt.subplot(nrows, ncols, nplot)
+    # SOFR_t3m_vix = pd.merge(
+    #     all_data["SOFR_t3m"],
+    #     all_data["vix"],
+    #     on="date",
+    #     how="inner",
+    #     suffixes=("", "_1"),
+    # )
+    # ax.plot(SOFR_t3m_vix["value_1"], SOFR_t3m_vix["value"], "b.")
+    # ax.set_xlabel("VIX")
+    # ax.set_ylabel("SOFR-T-bill Spread")
+    # corr = SOFR_t3m_vix["value_1"].corr(SOFR_t3m_vix["value"])
+    # ax.grid(True, linestyle=":")
+    # plt.title(f"VIX ~ SOFR-T-bill Spread, corr = {round(corr * 100, 2)}%")
 
     nplot += 1
     ax = plt.subplot(nrows, ncols, nplot)
@@ -920,15 +939,15 @@ if isdownloaded:
         "-",
         color="red",
         linewidth=1,
-        label="Cleveland FSI",
+        label="Cleveland FSI (discontinued)",
     )
     ax2.plot(
-        all_data["n_fci"]["date"],
-        all_data["n_fci"]["value"],
+        all_data["anfci"]["date"],
+        all_data["anfci"]["value"],
         "-",
         color="green",
         linewidth=1,
-        label="Chicago Fed National FCI",
+        label="Chicago Fed Adjusted National FCI",
     )
     ax2.set_xlim([xlim_start, xlim_end])
     ax2.legend(prop={"size": legend_fontsize}, loc="upper center")
@@ -1070,8 +1089,7 @@ if isdownloaded:
             label=comdty,
         )
         ax.set_xlim([future_long_start, xlim_end])
-        plt.title(comdty, fontsize=6, fontweight='bold')
-        ax.legend
+        ax.legend()
         plt.grid(True, linestyle=":")
         plt.tick_params(axis="both", which="major", labelsize=6)
         plt.tick_params(axis="both", which="minor", labelsize=6)
@@ -1104,8 +1122,7 @@ if isdownloaded:
             label=comdty,
         )
         # ax.set_xlim([future_short_start, xlim_end])
-        plt.title(comdty, fontsize=6, fontweight='bold')
-        ax.legend
+        ax.legend()
         plt.grid(True, linestyle=":")
         plt.tick_params(axis="both", which="major", labelsize=5)
         plt.tick_params(axis="both", which="minor", labelsize=5)  
