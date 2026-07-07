@@ -439,7 +439,7 @@ if not isdownloaded:
     ]
 
     futures_symbols = [
-        "DX=F",
+        "DX-Y.NYB", #"DX=F",
         "6E=F",
         "6J=F",
         "^FVX",

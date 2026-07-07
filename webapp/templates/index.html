@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Market Big Picture Watch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@500;700;900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.plot.ly/plotly-3.1.0.min.js" charset="utf-8"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>Market <span>Big&nbsp;Picture</span> Watch</h1>
+    <p class="tagline">Thirty years of markets, money, and the real economy</p>
+  </div>
+  <div class="stamp" id="stamp">
+    {% if meta %}
+      <span class="stamp-label">data updated</span>
+      <span class="stamp-value" id="updated-at" data-iso="{{ meta.updated_at }}">{{ meta.updated_at[:10] }}</span>
+    {% else %}
+      <span class="stamp-label">no data yet</span>
+    {% endif %}
+  </div>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Figure sets">
+  {% for f in figures %}
+  <button class="tab" role="tab" data-slug="{{ f.slug }}"
+          aria-selected="{{ 'true' if loop.first else 'false' }}">
+    <span class="tab-index">{{ '%02d' % loop.index }}</span>
+    <span class="tab-title">{{ f.title }}</span>
+  </button>
+  {% endfor %}
+</nav>
+
+<main>
+  <div id="plot" class="plot-host" role="tabpanel"></div>
+  <div id="message" class="message" hidden></div>
+</main>
+
+<footer class="foot">
+  <span>Sources: FRED · Yahoo Finance · multpl.com</span>
+  <span>Not investment advice.</span>
+</footer>
+
+<script>
+const plotDiv = document.getElementById("plot");
+const msgDiv = document.getElementById("message");
+const tabs = Array.from(document.querySelectorAll(".tab"));
+const cache = new Map();
+
+function showMessage(html) {
+  plotDiv.hidden = true;
+  msgDiv.hidden = false;
+  msgDiv.innerHTML = html;
+}
+
+async function showFigure(slug) {
+  tabs.forEach(t => t.setAttribute("aria-selected",
+                                   String(t.dataset.slug === slug)));
+  history.replaceState(null, "", "#" + slug);
+  try {
+    let figure = cache.get(slug);
+    if (!figure) {
+      showMessage("Loading\u2026");
+      const resp = await fetch("/api/figures/" + slug);
+      if (!resp.ok) {
+        const detail = (await resp.json().catch(() => ({}))).detail || resp.statusText;
+        showMessage("<strong>Figure unavailable.</strong> " + detail +
+          "<br>To build the figures, run <code>python -m app.update</code> " +
+          "and reload this page.");
+        return;
+      }
+      figure = await resp.json();
+      cache.set(slug, figure);
+    }
+    msgDiv.hidden = true;
+    plotDiv.hidden = false;
+    await Plotly.react(plotDiv, figure.data, figure.layout,
+                       {responsive: true, displaylogo: false});
+  } catch (err) {
+    showMessage("<strong>Could not load the figure.</strong> " + err);
+  }
+}
+
+tabs.forEach(t => t.addEventListener("click", () => showFigure(t.dataset.slug)));
+
+// local-time render of the update stamp
+const stampEl = document.getElementById("updated-at");
+if (stampEl) {
+  const d = new Date(stampEl.dataset.iso);
+  if (!isNaN(d)) stampEl.textContent = d.toLocaleString(undefined,
+    {year: "numeric", month: "short", day: "numeric",
+     hour: "2-digit", minute: "2-digit"});
+}
+
+const initial = location.hash.slice(1);
+const slugs = tabs.map(t => t.dataset.slug);
+showFigure(slugs.includes(initial) ? initial : slugs[0]);
+</script>
+</body>
+</html>

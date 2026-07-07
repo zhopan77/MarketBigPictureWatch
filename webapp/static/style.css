@@ -1,0 +1,145 @@
+/* Market Big Picture Watch — chrome stays quiet, the plots are the hero.
+   Palette: paper #f7f6f2, ink #16181d, slate #5b6472, ledger-green #0e6e4f,
+   hairline #e0dfd8. */
+
+:root {
+  --paper: #f7f6f2;
+  --ink: #16181d;
+  --slate: #5b6472;
+  --green: #0e6e4f;
+  --hairline: #e0dfd8;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --display: "Libre Franklin", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--display);
+}
+
+/* ---------- top bar ---------- */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+  padding: 1.1rem 1.5rem 0.9rem;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+.brand h1 span { color: var(--green); }
+.tagline {
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+  color: var(--slate);
+}
+
+.stamp {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  text-align: right;
+  white-space: nowrap;
+}
+.stamp-label {
+  display: block;
+  color: var(--slate);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.65rem;
+}
+.stamp-value { color: var(--green); font-weight: 500; }
+
+/* ---------- tabs ---------- */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  padding: 0 1.5rem;
+  border-bottom: 1px solid var(--hairline);
+  background: #fff;
+}
+
+.tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  padding: 0.7rem 1rem 0.55rem;
+  font-family: var(--display);
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--slate);
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+.tab:hover { color: var(--ink); }
+.tab:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+.tab[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 700;
+  border-bottom-color: var(--green);
+}
+.tab-index {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--green);
+}
+
+/* ---------- content ---------- */
+main { padding: 0.75rem 1rem 1.5rem; }
+
+.plot-host {
+  background: #fff;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  min-height: 60vh;
+}
+
+.message {
+  margin: 3rem auto;
+  max-width: 40rem;
+  text-align: center;
+  color: var(--slate);
+  font-size: 0.95rem;
+}
+.message code {
+  font-family: var(--mono);
+  background: #fff;
+  border: 1px solid var(--hairline);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
+/* ---------- footer ---------- */
+.foot {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 1.5rem 1.25rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--slate);
+}
+
+@media (max-width: 640px) {
+  .topbar { flex-direction: column; align-items: flex-start; }
+  .stamp { text-align: left; }
+  .tab-title { display: none; }           /* index numbers only on phones */
+  .tab[aria-selected="true"] .tab-title { display: inline; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
