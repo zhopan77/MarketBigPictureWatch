@@ -4,13 +4,50 @@
 
 :root {
   --paper: #f7f6f2;
+  --card: #ffffff;
   --ink: #16181d;
   --slate: #5b6472;
   --green: #0e6e4f;
+  --loss: #d40021;
+  --gain: #00874a;
   --hairline: #e0dfd8;
+  /* plot colours, read by the charts so they follow the theme */
+  --grid: rgba(150,150,150,0.45);
+  --axis: #16181d;
+  --fill: rgba(0,135,74,0.20);
+  --fill-loss: rgba(212,0,33,0.16);
+  /* monthly heatmap: neutral, +10%, -10% */
+  --heat-zero: #ffffff;
+  --heat-pos: #0b5c34;
+  --heat-neg: #8f0a1c;
+  --on-green: #ffffff;
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
   --display: "Libre Franklin", system-ui, sans-serif;
 }
+
+html[data-theme="dark"] {
+  --paper: #14161a;
+  --card: #1b1e24;
+  --ink: #e8e6e1;
+  --slate: #9aa3b0;
+  --green: #3fbf8f;
+  --loss: #ff4a3d;
+  --gain: #22e08e;
+  --hairline: #2c313a;
+  --grid: rgba(160,170,185,0.24);
+  --axis: #8b93a1;
+  --fill: rgba(34,224,142,0.18);
+  --fill-loss: rgba(255,74,61,0.17);
+  --heat-zero: #1b1e24;
+  --heat-pos: #22e08e;
+  --heat-neg: #ff4a3d;
+  --on-green: #0f1418;
+  color-scheme: dark;
+}
+
+/* (4) a slightly larger base type scale; every size in this sheet is in rem
+   so the whole UI scales together and nothing needs re-measuring */
+html { font-size: 112.5%; }
 
 * { box-sizing: border-box; }
 
@@ -67,7 +104,7 @@ body {
   gap: 0;
   padding: 0 1.5rem;
   border-bottom: 1px solid var(--hairline);
-  background: #fff;
+  background: var(--card);
 }
 
 .tab {
@@ -102,7 +139,7 @@ body {
 main { padding: 0.75rem 1rem 1.5rem; }
 
 .plot-host {
-  background: #fff;
+  background: var(--card);
   border: 1px solid var(--hairline);
   border-radius: 4px;
   min-height: 60vh;
@@ -117,7 +154,7 @@ main { padding: 0.75rem 1rem 1.5rem; }
 }
 .message code {
   font-family: var(--mono);
-  background: #fff;
+  background: var(--card);
   border: 1px solid var(--hairline);
   padding: 0.1rem 0.35rem;
   border-radius: 3px;
@@ -142,4 +179,401 @@ main { padding: 0.75rem 1rem 1.5rem; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
+}
+
+/* =====================================================================
+   All Weather Strategy tab.
+
+   Reuses the existing tokens exactly (paper / ink / slate / ledger-green /
+   hairline).  The chrome stays quiet; the equity curve and the ledger of
+   statistics are the hero.  Numbers are set in the mono face throughout so
+   columns align optically, which is the whole point of a stats table.
+   ===================================================================== */
+
+/* The panel is shown/hidden with the `hidden` attribute. An id selector
+   (1,0,0) outranks the UA's [hidden]{display:none} (0,1,0), so a bare
+   `#aw-root { display: block }` silently defeated it and the strategy panel
+   rendered underneath every other tab. Keep the attribute rule instead. */
+#aw-root[hidden] { display: none; }
+
+/* ---------- header ---------- */
+.aw-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+  padding: 0.25rem 0.25rem 0.9rem;
+  border-bottom: 1px solid var(--hairline);
+}
+.aw-head h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+  text-transform: uppercase;
+}
+.aw-head h2 .ver {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--green);
+  text-transform: none;
+  vertical-align: 0.35em;
+}
+.aw-sub { margin: 0.2rem 0 0; font-size: 0.8rem; color: var(--slate); max-width: 46rem; }
+
+.aw-facts { display: flex; gap: 1.4rem; margin: 0; }
+.aw-facts dt {
+  font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--slate);
+}
+.aw-facts dd { margin: 0.1rem 0 0; font-family: var(--mono); font-size: 0.85rem; }
+/* the date the book last actually changed -- the one fact you act on */
+.aw-facts dd.strong { font-weight: 700; }
+
+.pill {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+}
+.pill-on { background: rgba(14, 110, 79, 0.12); border-color: var(--green); color: var(--green); }
+.pill-off { background: var(--card); color: var(--slate); }
+
+/* ---------- statistics ledger ---------- */
+.aw-stats-scroll { overflow-x: auto; }
+.aw-stats {
+  width: 100%; min-width: 40rem;
+  border-collapse: collapse;
+  margin: 0.9rem 0 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+}
+.aw-stats th, .aw-stats td {
+  padding: 0.4rem 0.55rem;
+  text-align: right;
+  border-bottom: 1px solid var(--hairline);
+  white-space: nowrap;
+}
+.aw-stats th {
+  font-family: var(--display);
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--slate);
+}
+.aw-stats .lbl { text-align: left; font-family: var(--display); }
+.aw-stats tr:last-child td { border-bottom: none; }
+.aw-stats tr.hero td { font-weight: 700; background: rgba(14, 110, 79, 0.05); }
+
+.swatch {
+  display: inline-block; width: 0.62rem; height: 0.62rem;
+  border-radius: 2px; margin-right: 0.45rem; vertical-align: -0.02rem;
+}
+
+/* ---------- period controls ---------- */
+.aw-controls {
+  display: flex; flex-wrap: wrap; justify-content: space-between;
+  align-items: center; gap: 0.6rem; margin-top: 0.9rem;
+}
+.aw-quicks { display: flex; gap: 0.3rem; }
+.aw-quick {
+  appearance: none; cursor: pointer;
+  font-family: var(--mono); font-size: 0.72rem;
+  padding: 0.25rem 0.6rem;
+  background: var(--card); color: var(--slate);
+  border: 1px solid var(--hairline); border-radius: 3px;
+}
+.aw-quick:hover { color: var(--ink); border-color: var(--slate); }
+.aw-quick[aria-pressed="true"] {
+  background: var(--green); border-color: var(--green); color: var(--on-green);
+}
+.aw-quick:focus-visible, .btn:focus-visible,
+.aw-range input:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.aw-scale { font-size: 0.75rem; color: var(--slate); display: flex; align-items: center; gap: 0.3rem; }
+
+.aw-range {
+  display: flex; flex-wrap: wrap; gap: 1.2rem;
+  margin: 0.55rem 0 0.35rem;
+}
+.aw-range label {
+  display: flex; align-items: center; gap: 0.45rem;
+  flex: 1 1 18rem; font-size: 0.72rem; color: var(--slate);
+}
+.aw-range .rl { text-transform: uppercase; letter-spacing: 0.07em; font-size: 0.62rem; }
+.aw-range output {
+  font-family: var(--mono); font-size: 0.74rem; color: var(--ink);
+  min-width: 5.6rem;
+}
+.aw-range input[type="range"] { flex: 1; accent-color: var(--green); min-width: 6rem; }
+
+.aw-chart {
+  background: var(--card); border: 1px solid var(--hairline);
+  border-radius: 4px; min-height: 460px;
+}
+
+/* ---------- allocation ---------- */
+.aw-alloc {
+  display: grid;
+  grid-template-columns: minmax(240px, 22rem) 1fr;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.aw-alloc-chart, .aw-alloc-table {
+  background: var(--card); border: 1px solid var(--hairline);
+  border-radius: 4px; padding: 0.7rem 0.85rem 0.85rem;
+}
+.aw-alloc h3 {
+  margin: 0 0 0.2rem; font-size: 0.78rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.aw-alloc h3 .asof {
+  font-family: var(--mono); font-size: 0.68rem; font-weight: 400;
+  color: var(--slate); text-transform: none; letter-spacing: 0;
+}
+
+.aw-export {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+.aw-export label {
+  font-size: 0.72rem; color: var(--slate);
+  display: flex; align-items: center; gap: 0.3rem;
+}
+.aw-export .cur { font-family: var(--mono); }
+.aw-export input[type="number"] {
+  font-family: var(--mono); font-size: 0.78rem; width: 7.5rem;
+  padding: 0.24rem 0.4rem;
+  border: 1px solid var(--hairline); border-radius: 3px; background: var(--paper);
+}
+.btn {
+  appearance: none; cursor: pointer;
+  font-family: var(--display); font-size: 0.75rem; font-weight: 700;
+  padding: 0.35rem 0.8rem;
+  background: var(--green); color: var(--on-green);
+  border: 1px solid var(--green); border-radius: 3px;
+}
+.btn:hover { filter: brightness(1.12); }
+
+.aw-holdings {
+  width: 100%; border-collapse: collapse;
+  font-family: var(--mono); font-size: 0.76rem;
+}
+.aw-holdings th, .aw-holdings td {
+  padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--hairline);
+  text-align: left; white-space: nowrap;
+}
+.aw-holdings th {
+  font-family: var(--display); font-size: 0.62rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--slate);
+}
+.aw-holdings .r, .aw-holdings th.r { text-align: right; }
+.aw-holdings .sym { font-weight: 500; color: var(--green); }
+.aw-holdings .name {
+  font-family: var(--display); color: var(--slate);
+  white-space: normal; font-size: 0.72rem;
+}
+.aw-holdings tr:last-child td { border-bottom: none; }
+
+/* ---------- adjustment log ---------- */
+.aw-logbox {
+  margin-top: 1rem; background: var(--card);
+  border: 1px solid var(--hairline); border-radius: 4px;
+}
+.aw-logbox summary {
+  cursor: pointer; padding: 0.55rem 0.85rem;
+  font-size: 0.75rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--slate);
+}
+.aw-logbox summary:hover { color: var(--ink); }
+.aw-loglines {
+  max-height: 22rem; overflow-y: auto;
+  padding: 0 0.85rem 0.7rem;
+  font-family: var(--mono); font-size: 0.72rem;
+}
+.logline {
+  display: flex; gap: 0.6rem; align-items: baseline;
+  padding: 0.16rem 0; border-top: 1px solid var(--hairline);
+}
+.logline .d { color: var(--slate); }
+.logline .t {
+  font-size: 0.64rem; padding: 0 0.32rem; border-radius: 2px;
+  border: 1px solid var(--hairline); color: var(--slate);
+}
+.logline .t-to-QQQ { color: var(--green); border-color: var(--green); }
+.logline .t-to-PORT { color: var(--loss); border-color: var(--loss); }
+.logline .h { color: var(--slate); }
+.logline .w { flex: 1; }
+
+@media (max-width: 860px) {
+  .aw-alloc { grid-template-columns: 1fr; }
+  .aw-facts { gap: 1rem; }
+}
+
+/* ---------- monthly / yearly returns ---------- */
+.aw-monthly {
+  margin-top: 1rem; background: var(--card);
+  border: 1px solid var(--hairline); border-radius: 4px;
+  padding: 0.7rem 0.85rem 0.85rem;
+}
+.aw-monthly h3 {
+  margin: 0 0 0.5rem; font-size: 0.78rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.aw-monthly h3 .asof {
+  font-family: var(--mono); font-size: 0.66rem; font-weight: 400;
+  color: var(--slate); text-transform: none; letter-spacing: 0;
+}
+.aw-monthly-scroll { overflow-x: auto; }
+.aw-monthly table {
+  width: 100%; font-family: var(--mono); font-size: 0.74rem;
+  /* separate borders so each month reads as its own block */
+  border-collapse: separate; border-spacing: 2px;
+}
+.aw-monthly th, .aw-monthly td {
+  padding: 0.3rem 0.45rem; text-align: right; white-space: nowrap;
+  border: none;
+}
+/* a month block: colour set inline from the return, text colour chosen for
+   contrast against it (see heatColors() in strategy.js) */
+.aw-monthly td.cell {
+  border-radius: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.aw-monthly thead, .aw-monthly tr:first-child th {
+  font-family: var(--display); font-size: 0.62rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--slate);
+}
+.aw-monthly th.yr {
+  text-align: left; font-family: var(--mono); font-size: 0.74rem;
+  font-weight: 500; color: var(--ink); text-transform: none; letter-spacing: 0;
+}
+
+.aw-monthly td.na { color: var(--slate); opacity: 0.45; }
+/* Yearly totals stay plain: bold plus the gain/loss text colour, and
+   deliberately NO block fill, so they read as a summary of the row rather
+   than another cell in the matrix. */
+.aw-monthly .tot {
+  font-weight: 700;
+  border-left: 1px solid var(--hairline);
+  padding-left: 0.6rem;
+}
+
+
+/* ---------- brand lockup ----------
+   The Einnia mark sits left of the wordmark in the top bar.  The logo art
+   already carries its own wordmark, so it is sized to read as a mark at a
+   glance rather than compete with the page title next to it. */
+.brand { display: flex; align-items: center; gap: 0.85rem; }
+.brand .logo {
+  height: 70px; width: auto; display: block; flex: none;
+}
+/* The mark's blue and red sit at 2.8:1 and 3.8:1 against the dark paper, so
+   dark mode loads a variant whose failing hues are lifted to clear AA. Both
+   files ship; CSS picks one, so the correct logo is right on first paint. */
+/* NB: these must out-specify `.brand .logo` above (0,2,0), or both logos
+   render at once. Hence `.brand .logo-*` rather than a bare `.logo-*`. */
+.brand .logo-dark { display: none; }
+html[data-theme="dark"] .brand .logo-light { display: none; }
+html[data-theme="dark"] .brand .logo-dark { display: block; }
+.brand-text { min-width: 0; }
+
+@media (max-width: 640px) {
+  .brand { gap: 0.6rem; }
+  .brand .logo { height: 50px; }
+}
+
+.plot-missing {
+  margin: 0; padding: 2.5rem 1rem; text-align: center;
+  font-size: 0.85rem; color: var(--slate);
+}
+
+/* ---------- sleeve-fraction picker ----------
+   All three fractions are precomputed and held in memory, so changing this
+   is an instant re-render rather than a round trip. */
+.aw-frac-pick {
+  display: flex; flex-direction: column; gap: 0.15rem;
+  padding: 0 1rem 0 0;
+}
+.aw-frac-pick label {
+  font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--slate);
+}
+.aw-frac-pick select {
+  font-family: var(--mono); font-size: 0.85rem;
+  padding: 0.2rem 0.45rem;
+  background: var(--card); color: var(--ink);
+  border: 1px solid var(--green); border-radius: 3px;
+  cursor: pointer;
+}
+.aw-frac-pick select:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.aw-frac-pick .hint {
+  font-size: 0.62rem; color: var(--slate); max-width: 13rem; line-height: 1.25;
+}
+@media (max-width: 860px) {
+  .aw-frac-pick .hint { display: none; }
+}
+
+/* ---------- narrow-screen containment ----------
+   Grid and flex children default to min-width:auto, so wide content (the
+   nowrap holdings table, the four facts) pushed the whole page sideways
+   instead of scrolling within its own card. */
+.aw-alloc > * { min-width: 0; }
+.aw-alloc-table { overflow-x: auto; }
+.aw-facts { flex-wrap: wrap; row-gap: 0.5rem; }
+
+
+/* ---------- theme switch ---------- */
+.topbar-right {
+  display: flex; align-items: flex-end; gap: 1.1rem;
+}
+.theme-toggle {
+  display: flex; align-items: center; gap: 0.35rem;
+  font-family: var(--mono); font-size: 0.7rem; color: var(--slate);
+  cursor: pointer; white-space: nowrap;
+}
+.theme-toggle input { accent-color: var(--green); cursor: pointer; }
+.theme-toggle:hover { color: var(--ink); }
+.theme-toggle input:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+
+body { transition: background-color 0.18s ease, color 0.18s ease; }
+@media (prefers-reduced-motion: reduce) { body { transition: none; } }
+
+
+/* ---------- signed figures ----------
+   Losses shout: alarming red, bolder than their neighbours so a bad month is
+   findable at a glance. Gains are clearly green but stay at normal weight, so
+   a column of good years reads calmly instead of competing with the losses.
+   Applied to returns only (Return, CAGR, MaxDD, monthly cells, yearly totals)
+   -- volatility, Sharpe, Sortino and Ulcer are not signed, so they stay ink. */
+/* Weight is set by the row (strategy) and the column (yearly total); these
+   rules only carry colour, so they must not fight the weight rules above. */
+.aw-stats tr td.neg,
+.aw-monthly td.neg { color: var(--loss); }
+.aw-stats tr td.gain,
+.aw-monthly td.gain { color: var(--gain); }
+
+
+
+/* ---------- stale-cache notice ---------- */
+.aw-stale {
+  margin: 0 0 0.8rem; padding: 0.5rem 0.75rem;
+  background: var(--card);
+  border: 1px solid var(--loss); border-left-width: 3px; border-radius: 3px;
+  font-size: 0.78rem; color: var(--ink);
+}
+.aw-stale code {
+  font-family: var(--mono); font-size: 0.74rem;
+  background: var(--paper); padding: 0.05rem 0.3rem; border-radius: 2px;
+}
+.aw-logbox summary .extent {
+  font-family: var(--mono); font-weight: 400; text-transform: none;
+  letter-spacing: 0; font-size: 0.68rem; color: var(--slate);
+  margin-left: 0.5rem;
 }

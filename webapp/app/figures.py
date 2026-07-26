@@ -18,7 +18,7 @@ from plotly.subplots import make_subplots
 macro_yrs_ultralong = 30
 future_yrs_long = 8
 future_yrs_short = 1
-legend_fontsize = 10
+legend_fontsize = 12
 
 GRID = dict(showgrid=True, griddash="dot", gridcolor="rgba(150,150,150,0.55)")
 NOGRID = dict(showgrid=False)
@@ -103,7 +103,7 @@ def style_figure(fig, xlim=None, height=1000):
         plot_bgcolor="white", paper_bgcolor="white",
         autosize=True, height=height,
         margin=dict(l=60, r=60, t=60, b=40),
-        font=dict(size=12),
+        font=dict(size=14),
     )
     fig.update_xaxes(**GRID, ticks="outside",
                      linecolor="black", mirror=True, zeroline=False)
@@ -350,7 +350,7 @@ def build_fig_futures(d, todaystr, start_date, xlim_end, suptitle,
                                legend=lm.new(r, c, "upper left")),
                           row=r, col=c)
             fig.add_annotation(text=comdty + "<br>(no data)", showarrow=False,
-                               font=dict(size=11, color="#999"),
+                               font=dict(size=13, color="#999"),
                                x=0.5, y=0.5, xref="x domain", yref="y domain",
                                row=r, col=c)
         if fixed_xlim:
@@ -363,11 +363,11 @@ def build_fig_futures(d, todaystr, start_date, xlim_end, suptitle,
         autosize=True, height=1000,
         margin=dict(l=50, r=30, t=70, b=30),
         title=dict(text=suptitle, x=0.5, xanchor="center",
-                   font=dict(size=14)),
+                   font=dict(size=16)),
     )
-    fig.update_xaxes(**GRID, tickfont=dict(size=7), ticks="outside",
+    fig.update_xaxes(**GRID, tickfont=dict(size=9), ticks="outside",
                      linecolor="black", mirror=True, zeroline=False)
-    fig.update_yaxes(**GRID, tickfont=dict(size=7), ticks="outside",
+    fig.update_yaxes(**GRID, tickfont=dict(size=9), ticks="outside",
                      linecolor="black", mirror=True, zeroline=False)
     return fig
 

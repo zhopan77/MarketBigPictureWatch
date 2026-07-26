@@ -6,15 +6,43 @@
 <title>Market Big Picture Watch</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@500;700;900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Tab icon: the swirl mark alone, square and pre-rendered at each size a
+     browser asks for. The wordmark is dropped here because it is unreadable
+     at 16px and non-square icons get letterboxed or squashed inconsistently. -->
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/svg+xml" href="/static/einnia-mark.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+<script>
+(function () {
+  try {
+    if (localStorage.getItem("mw-theme") === "dark")
+      document.documentElement.dataset.theme = "dark";
+  } catch (e) { /* private mode: fall back to light */ }
+})();
+</script>
 <link rel="stylesheet" href="/static/style.css">
 <script src="https://cdn.plot.ly/plotly-3.1.0.min.js" charset="utf-8"></script>
 </head>
-<body>
+<body data-default-frac="{{ strategy_defaults.frac }}"
+      data-default-years="{{ strategy_defaults.years }}"
+      data-payload-version="{{ strategy_payload_version }}">
 <header class="topbar">
   <div class="brand">
-    <h1>Market <span>Big&nbsp;Picture</span> Watch</h1>
-    <p class="tagline">Thirty years of markets, money, and the real economy</p>
+    <img class="logo logo-light" src="/static/einnia.svg" alt="Einnia"
+         width="146" height="201" decoding="async">
+    <img class="logo logo-dark" src="/static/einnia-dark.svg" alt=""
+         width="146" height="201" decoding="async" aria-hidden="true">
+    <div class="brand-text">
+      <h1>Market <span>Big&nbsp;Picture</span> Watch</h1>
+      <p class="tagline">Thirty years of markets, money, and the real economy</p>
+    </div>
   </div>
+  <div class="topbar-right">
+  <label class="theme-toggle" for="theme-switch">
+    <input type="checkbox" id="theme-switch"> Dark mode
+  </label>
   <div class="stamp" id="stamp">
     {% if meta %}
       <span class="stamp-label">data updated</span>
@@ -22,6 +50,7 @@
     {% else %}
       <span class="stamp-label">no data yet</span>
     {% endif %}
+  </div>
   </div>
 </header>
 
@@ -33,23 +62,118 @@
     <span class="tab-title">{{ f.title }}</span>
   </button>
   {% endfor %}
+  <button class="tab" role="tab" data-slug="{{ strategy_tab.slug }}"
+          aria-selected="false">
+    <span class="tab-index">{{ '%02d' % (figures|length + 1) }}</span>
+    <span class="tab-title">{{ strategy_tab.title }}</span>
+  </button>
 </nav>
 
 <main>
+  <!-- macro figure panel -->
   <div id="plot" class="plot-host" role="tabpanel"></div>
   <div id="message" class="message" hidden></div>
+
+  <!-- All Weather Strategy panel -->
+  <section id="aw-root" role="tabpanel" hidden>
+    <div id="aw-message" class="message" hidden></div>
+
+    <div id="aw-panel" hidden>
+      <p id="aw-stale" class="aw-stale" hidden></p>
+      <div class="aw-head">
+        <div>
+          <h2>All Weather 9 <span class="ver">v3.9.2</span></h2>
+        </div>
+        <div class="aw-frac-pick">
+          <label for="aw-frac">QQQ sleeve fraction</label>
+          <select id="aw-frac"></select>
+          <span class="hint">share of the book tilted into QQQ while the
+            sleeve is on</span>
+        </div>
+        <dl class="aw-facts">
+          <div><dt>through</dt><dd id="aw-asof">&mdash;</dd></div>
+          <div><dt>Hurst</dt><dd id="aw-hurst">&mdash;</dd></div>
+          <div><dt>rebalances</dt><dd id="aw-rebals">&mdash;</dd></div>
+          <div><dt>BIL carry</dt><dd id="aw-bil">&mdash;</dd></div>
+          <div><dt>sleeve</dt><dd><span id="aw-sleeve" class="pill">&mdash;</span></dd></div>
+          <div><dt>last adjustment</dt><dd id="aw-lastadj" class="strong">&mdash;</dd></div>
+        </dl>
+      </div>
+
+      <div class="aw-stats-scroll">
+        <table class="aw-stats"><tbody id="aw-stats"></tbody></table>
+      </div>
+
+      <div class="aw-controls">
+        <div class="aw-quicks">
+          {% for y in [1, 3, 5, 10, 15] %}
+          <button class="aw-quick" data-years="{{ y }}" aria-pressed="false">{{ y }}y</button>
+          {% endfor %}
+          <button class="aw-quick" data-years="max" aria-pressed="false">Max</button>
+        </div>
+        <label class="aw-scale">
+          <input type="checkbox" id="aw-log-scale"> log scale
+        </label>
+      </div>
+
+      <div class="aw-range">
+        <label><span class="rl">begin</span> <output id="aw-from-label">&mdash;</output>
+          <input type="range" id="aw-from" min="0" max="1" value="0"></label>
+        <label><span class="rl">end</span> <output id="aw-to-label">&mdash;</output>
+          <input type="range" id="aw-to" min="0" max="1" value="1"></label>
+      </div>
+
+      <div id="aw-chart" class="aw-chart"></div>
+
+      <div class="aw-alloc">
+        <div class="aw-alloc-chart">
+          <h3>Allocation <span class="asof">as of <span id="aw-alloc-date">&mdash;</span></span></h3>
+          <div id="aw-pie"></div>
+        </div>
+        <div class="aw-alloc-table">
+          <div class="aw-export">
+            <label>invest <span class="cur">$</span>
+              <input type="number" id="aw-amount" value="100000" min="1" step="1000">
+            </label>
+            <button id="aw-export" class="btn">Export allocation CSV</button>
+          </div>
+          <table class="aw-holdings">
+            <thead><tr><th>Symbol</th><th>Holding</th><th class="r">Weight</th>
+              <th class="r">Amount</th><th class="r">Price</th><th class="r">Shares</th></tr></thead>
+            <tbody id="aw-alloc-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <section class="aw-monthly">
+        <h3>Monthly returns
+          <span class="asof">strategy, % &mdash; selected period; the first
+          month is partial unless the period starts on a month boundary</span></h3>
+        <div class="aw-monthly-scroll"><table id="aw-monthly"></table></div>
+      </section>
+
+      <details class="aw-logbox">
+        <summary>Adjustment log &mdash; every rebalance and sleeve flip
+          <span class="extent" id="aw-log-extent"></span></summary>
+        <div id="aw-log" class="aw-loglines"></div>
+      </details>
+    </div>
+  </section>
 </main>
 
 <footer class="foot">
-  <span>Sources: FRED · Yahoo Finance · multpl.com</span>
+  <span>Sources: FRED &middot; Yahoo Finance &middot; multpl.com</span>
   <span>Not investment advice.</span>
 </footer>
 
+<script src="/static/strategy.js"></script>
 <script>
 const plotDiv = document.getElementById("plot");
 const msgDiv = document.getElementById("message");
+const awRoot = document.getElementById("aw-root");
 const tabs = Array.from(document.querySelectorAll(".tab"));
 const cache = new Map();
+const STRATEGY_SLUG = "all-weather";
 
 function showMessage(html) {
   plotDiv.hidden = true;
@@ -61,6 +185,17 @@ async function showFigure(slug) {
   tabs.forEach(t => t.setAttribute("aria-selected",
                                    String(t.dataset.slug === slug)));
   history.replaceState(null, "", "#" + slug);
+
+  // The strategy tab is its own panel, not a pre-rendered figure.
+  const isStrategy = slug === STRATEGY_SLUG;
+  awRoot.hidden = !isStrategy;
+  if (isStrategy) {
+    plotDiv.hidden = true;
+    msgDiv.hidden = true;
+    await loadStrategy();
+    return;
+  }
+
   try {
     let figure = cache.get(slug);
     if (!figure) {
@@ -80,12 +215,41 @@ async function showFigure(slug) {
     plotDiv.hidden = false;
     await Plotly.react(plotDiv, figure.data, figure.layout,
                        {responsive: true, displaylogo: false});
+    applyFigureTheme(plotDiv, figure);
   } catch (err) {
     showMessage("<strong>Could not load the figure.</strong> " + err);
   }
 }
 
 tabs.forEach(t => t.addEventListener("click", () => showFigure(t.dataset.slug)));
+
+// ---- dark mode ----------------------------------------------------------
+// The stylesheet does all the work through custom properties; this only
+// flips the flag, remembers it, and repaints whichever plot is on screen
+// (plotly figures carry their own baked-in colours, unlike the CSS).
+const themeSwitch = document.getElementById("theme-switch");
+
+function currentSlug() {
+  const t = tabs.find(t => t.getAttribute("aria-selected") === "true");
+  return t ? t.dataset.slug : null;
+}
+
+function setTheme(dark) {
+  if (dark) document.documentElement.dataset.theme = "dark";
+  else delete document.documentElement.dataset.theme;
+  themeSwitch.checked = dark;
+  try { localStorage.setItem("mw-theme", dark ? "dark" : "light"); } catch (e) {}
+  const slug = currentSlug();
+  if (slug === STRATEGY_SLUG) {
+    renderThemed();
+  } else {
+    const fig = cache.get(slug);
+    if (fig) applyFigureTheme(plotDiv, fig);
+  }
+}
+
+themeSwitch.checked = document.documentElement.dataset.theme === "dark";
+themeSwitch.addEventListener("change", () => setTheme(themeSwitch.checked));
 
 // local-time render of the update stamp
 const stampEl = document.getElementById("updated-at");

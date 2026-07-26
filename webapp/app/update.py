@@ -17,7 +17,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
-from . import data_pipeline, figures, settings
+from . import data_pipeline, figures, settings, strategy_service
 
 FIG_DIR = settings.DATA_DIR / "figures"
 META_PATH = settings.DATA_DIR / "meta.json"
@@ -37,7 +37,22 @@ def rebuild_figures(all_data: dict, log=print) -> None:
     }), encoding="utf-8")
 
 
-def run_update(rebuild_only: bool = False, log=print) -> None:
+def run_strategy(log=print) -> bool:
+    """Rerun the All-Weather backtest and cache it.  Isolated in its own
+    try/except so a Yahoo hiccup here can never take down the macro figures
+    (and vice versa) -- each half of the dashboard fails independently."""
+    log("Running All-Weather strategy backtest...")
+    try:
+        strategy_service.run_strategy_update(log_fn=log)
+        return True
+    except Exception:
+        log("Strategy update FAILED (macro figures are unaffected):")
+        traceback.print_exc()
+        return False
+
+
+def run_update(rebuild_only: bool = False, log=print,
+               skip_strategy: bool = False) -> None:
     if rebuild_only:
         log("Rebuilding figures from existing pickle (no download)...")
         all_data = data_pipeline.load_data()
@@ -46,6 +61,8 @@ def run_update(rebuild_only: bool = False, log=print) -> None:
         data_pipeline.save_data(all_data)
         log(f"Saved data to {data_pipeline.PICKLE_PATH}")
     rebuild_figures(all_data, log=log)
+    if not skip_strategy:
+        run_strategy(log=log)
     log("Update complete.")
 
 
@@ -54,9 +71,16 @@ def main() -> int:
     parser.add_argument("--rebuild-only", action="store_true",
                         help="rebuild figures from the existing pickle "
                              "without downloading")
+    parser.add_argument("--strategy-only", action="store_true",
+                        help="rerun only the All-Weather backtest")
+    parser.add_argument("--skip-strategy", action="store_true",
+                        help="refresh the macro figures but not the strategy")
     args = parser.parse_args()
     try:
-        run_update(rebuild_only=args.rebuild_only)
+        if args.strategy_only:
+            return 0 if run_strategy() else 1
+        run_update(rebuild_only=args.rebuild_only,
+                   skip_strategy=args.skip_strategy)
         return 0
     except Exception:
         traceback.print_exc()
