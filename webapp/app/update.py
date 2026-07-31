@@ -17,24 +17,40 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
-from . import data_pipeline, figures, settings, strategy_service
+import plotly.io as pio
+
+from . import data_pipeline, figures, figures_i18n, settings, strategy_service
 
 FIG_DIR = settings.DATA_DIR / "figures"
 META_PATH = settings.DATA_DIR / "meta.json"
 
 
-def rebuild_figures(all_data: dict, log=print) -> None:
-    """Build all figures and serialize them to JSON for the web app."""
-    log("Building figures...")
-    figs = figures.build_all_figures(all_data)
+def rebuild_figures(all_data, log=print) -> None:
+    """Serialize every figure, once per language.
+
+    The chart text is baked into the JSON, so a translated chart is a separate
+    file rather than something the browser can do at render time. Missing
+    translations are reported rather than silently leaving English in a
+    Chinese chart.
+    """
     FIG_DIR.mkdir(parents=True, exist_ok=True)
+    figs = figures.build_all_figures(all_data)
     for slug, fig in figs.items():
-        (FIG_DIR / f"{slug}.json").write_text(fig.to_json(), encoding="utf-8")
-        log(f"  wrote figures/{slug}.json")
+        (FIG_DIR / f"{slug}.json").write_text(pio.to_json(fig), encoding="utf-8")
+        for lang in figures_i18n.TABLES:
+            gaps = figures_i18n.untranslated(fig, lang)
+            if gaps:
+                log(f"  [{lang}] {slug}: no translation for {gaps}")
+            translated = figures_i18n.translate_figure(fig, lang)
+            (FIG_DIR / f"{slug}.{lang}.json").write_text(
+                pio.to_json(translated), encoding="utf-8")
+    langs = ", ".join(["en"] + list(figures_i18n.TABLES))
+    log(f"Wrote {len(figs)} figures x {{{langs}}} to {FIG_DIR}")
     META_PATH.write_text(json.dumps({
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "figures": [{"slug": s, "title": t} for s, t in figures.FIGURES.items()],
-    }), encoding="utf-8")
+        "figures": list(figs.keys()),
+        "languages": ["en"] + list(figures_i18n.TABLES),
+    }, indent=2), encoding="utf-8")
 
 
 def run_strategy(log=print) -> bool:
@@ -55,7 +71,18 @@ def run_update(rebuild_only: bool = False, log=print,
                skip_strategy: bool = False) -> None:
     if rebuild_only:
         log("Rebuilding figures from existing pickle (no download)...")
-        all_data = data_pipeline.load_data()
+        try:
+            all_data = data_pipeline.load_data()
+        except data_pipeline.DataCacheError as exc:
+            # Falling back beats failing: the cache is only a download cache,
+            # and re-fetching costs a couple of minutes rather than a manual
+            # diagnosis.
+            log(str(exc))
+            log("")
+            log("Downloading fresh data instead...")
+            all_data = data_pipeline.collect_all_data(log=log)
+            data_pipeline.save_data(all_data)
+            log(f"Saved data to {data_pipeline.PICKLE_PATH}")
     else:
         all_data = data_pipeline.collect_all_data(log=log)
         data_pipeline.save_data(all_data)

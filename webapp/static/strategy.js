@@ -11,6 +11,8 @@
  */
 
 const AW = {
+  kind: null,      // "base" | "leverage" -- which cached payload is loaded
+  cache: {},       // kind -> payload, so switching tabs is instant
   data: null,      // the cached payload (all sleeve fractions)
   frac: null,      // selected SLEEVE_FRAC key, e.g. "0.50"
   i0: 0, i1: 0,    // selected [begin, end] indices into data.dates
@@ -25,11 +27,11 @@ const seriesFor = key =>
   key === "strategy" ? variant().series : AW.data.benchmarks[key];
 
 const SERIES = [
-  { key: "strategy", label: "All Weather Strategy",
+  { key: "strategy", label: "All Weather Strategy", i18n: "series.strategy",
     light: "#0e6e4f", dark: "#3fbf8f", width: 3.0, fill: true },
-  { key: "SPY", label: "SPY buy & hold",
+  { key: "SPY", label: "SPY buy & hold", i18n: "series.spy",
     light: "#c2903a", dark: "#e0b158", width: 1.4, fill: false },
-  { key: "QQQ", label: "QQQ buy & hold",
+  { key: "QQQ", label: "QQQ buy & hold", i18n: "series.qqq",
     light: "#4d6fa8", dark: "#7fa8e6", width: 1.4, fill: false },
 ];
 
@@ -42,6 +44,11 @@ const PIE_DARK  = ["#3fbf8f", "#e0b158", "#7fa8e6", "#c88bae", "#9ec95a",
  * Chart colours are read from the CSS custom properties at draw time, so the
  * charts follow whatever the stylesheet says the theme is. One source of
  * truth: change a token in style.css and the plots move with it. */
+// The strategy series is named for the tab it belongs to, so tab 07's legend
+// reads "All Weather Leverage Strategy" rather than borrowing tab 06's name.
+const seriesLabel = s => (s.key === "strategy" && AW.kind === "leverage")
+  ? t("series.strategy_lev") : t(s.i18n);
+
 const isDark = () => document.documentElement.dataset.theme === "dark";
 const cssVar = n =>
   getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -194,17 +201,28 @@ function stats(series) {
     if (dd > maxDD) maxDD = dd;
     ddSq += (100 * dd) * (100 * dd);
   }
+  const ulcer = Math.sqrt(ddSq / n);
+  const cagr = Math.pow(series[n - 1] / series[0], 1 / years) - 1;
   return {
     total: series[n - 1] / series[0] - 1,
-    cagr: Math.pow(series[n - 1] / series[0], 1 / years) - 1,
+    cagr: cagr,
     vol: sd * A,
     dvol: sdDown * A,
     sharpe: sd > 0 ? (mean / sd) * A : 0,
     sortino: sdDown > 0 ? (mean * A) / sdDown : 0,
-    ulcer: Math.sqrt(ddSq / n),
+    ulcer: ulcer,
+    // Ulcer Performance Index / Martin ratio. Mirrors compute_stats() in
+    // strategy_service.py: no risk-free rate, CAGR in percent to match the
+    // Ulcer Index's units.
+    upi: ulcer > 0 ? (cagr * 100) / ulcer : 0,
     maxDD: maxDD,
   };
 }
+
+// Symbols and tags come from our own backend, but they are interpolated into
+// innerHTML, so escape them rather than trusting the shape of the payload.
+const esc = s => String(s).replace(/[&<>"]/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 const pct = (x, d = 1) => (x * 100).toFixed(d) + "%";
 const num = (x, d = 2) => x.toFixed(d);
@@ -221,8 +239,7 @@ const signed = (v, txt) => `<td class="${v < 0 ? "neg" : "gain"}">${txt}</td>`;
 function plotInto(id, traces, layout) {
   const el = document.getElementById(id);
   if (typeof Plotly === "undefined") {
-    el.innerHTML = '<p class="plot-missing">Charts need plotly.js, which did ' +
-      'not load. Everything else on this tab is unaffected.</p>';
+    el.innerHTML = '<p class="plot-missing">' + esc(t("msg.noplotly")) + '</p>';
     return;
   }
   Plotly.react(el, traces, layout, { responsive: true, displaylogo: false });
@@ -234,8 +251,7 @@ function plotInto(id, traces, layout) {
  * The first month is therefore a partial month whenever the period does not
  * begin on a month boundary - flagged in the caption rather than hidden.
  * ---------------------------------------------------------------------- */
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS_KEY = "months";
 
 function monthlyReturns() {
   const dates = AW.data.dates.slice(AW.i0, AW.i1 + 1);
@@ -299,7 +315,8 @@ function renderMonthly() {
   const neg  = _rgb(cssVar("--heat-neg"));
 
   const head = `<tr><th class="yr"></th>` +
-    MONTHS.map(m => `<th>${m}</th>`).join("") + `<th class="tot">Year</th></tr>`;
+    t(MONTHS_KEY).map(m => `<th>${m}</th>`).join("") +
+    `<th class="tot">${t("monthly.year")}</th></tr>`;
   const rows = [...byYear.entries()].map(([y, months]) => {
     let growth = 1, any = false;
     const cells = months.map(r => {
@@ -325,16 +342,20 @@ function renderStats() {
     return { s, st: stats(slice) };
   }).filter(x => x.st);
 
-  const head = `<tr><th class="lbl">Name</th><th>Return</th><th>CAGR</th>
-      <th>Volatility</th><th>Down&nbsp;Vol</th><th>Sharpe</th><th>Sortino</th>
-      <th>Ulcer</th><th>MaxDD</th></tr>`;
+  const head = `<tr><th class="lbl">${t("stats.name")}</th>
+      <th>${t("stats.return")}</th><th>${t("stats.cagr")}</th>
+      <th>${t("stats.vol")}</th><th>${t("stats.dvol")}</th>
+      <th>${t("stats.sharpe")}</th><th>${t("stats.sortino")}</th>
+      <th>${t("stats.ulcer")}</th><th>${t("stats.upi")}</th>
+      <th>${t("stats.maxdd")}</th></tr>`;
   const body = rows.map(({ s, st }, i) => `
     <tr class="${i === 0 ? "hero" : ""}">
-      <td class="lbl"><span class="swatch" style="background:${seriesColor(s)}"></span>${s.label}</td>
+      <td class="lbl"><span class="swatch" style="background:${seriesColor(s)}"></span>${esc(seriesLabel(s))}</td>
       ${signed(st.total, pct(st.total, 1))}${signed(st.cagr, pct(st.cagr, 2))}
       <td>${pct(st.vol, 1)}</td><td>${pct(st.dvol, 1)}</td>
       <td>${num(st.sharpe)}</td><td>${num(st.sortino)}</td>
-      <td>${num(st.ulcer)}</td><td class="neg">-${pct(st.maxDD, 1)}</td>
+      <td>${num(st.ulcer)}</td><td>${num(st.upi)}</td>
+      <td class="neg">-${pct(st.maxDD, 1)}</td>
     </tr>`).join("");
   document.getElementById("aw-stats").innerHTML = head + body;
 }
@@ -381,10 +402,10 @@ function renderChart() {
 
   // fills first so the lines draw on top of them
   const traces = area.concat(lines.map(({ s, y }) => ({
-    x, y, name: s.label, type: "scatter", mode: "lines",
+    x, y, name: seriesLabel(s), type: "scatter", mode: "lines",
     line: { color: seriesColor(s), width: s.width },
     hovertemplate: (log ? "%{y:.0f}" : "%{y:.1f}%") +
-                   "<extra>" + s.label + "</extra>",
+                   "<extra>" + seriesLabel(s) + "</extra>",
   })));
 
   const ink = cssVar("--ink"), grid = cssVar("--grid"),
@@ -401,7 +422,7 @@ function renderChart() {
     xaxis: { showgrid: true, griddash: "dot", gridcolor: grid,
              linecolor: axis, mirror: true, ticks: "outside",
              automargin: true, tickfont: { color: ink } },
-    yaxis: { title: { text: log ? "growth of 100 (log)" : "cumulative return",
+    yaxis: { title: { text: log ? t("chart.growth") : t("chart.cumret"),
                       standoff: 12 },
              automargin: true,
              ticksuffix: log ? "" : "%",
@@ -456,17 +477,25 @@ function renderLog() {
   const ext = document.getElementById("aw-log-extent");
   if (ext) {
     ext.textContent = all.length
-      ? `${all.length} entries, ${all[0].date} to ${all[all.length - 1].date}`
-      : "no entries";
+      ? `${all.length} ${t("log.entries")}, ${all[0].date} ${t("log.to")} `
+        + `${all[all.length - 1].date}`
+      : t("log.none");
   }
   const items = all.slice().reverse();
   document.getElementById("aw-log").innerHTML = items.map(a => {
     const legs = Object.entries(a.weights)
       .map(([k, v]) => `${k}=${Math.round(v * 100)}%`).join(" ");
+    // Tags arrive as "REBAL" / "to PORT" / "to <SYM>"; render them in the
+    // current language, and key the colour on meaning rather than wording.
+    const isRebal = a.tag === "REBAL";
+    const isOff = a.tag === "to PORT";
+    const cls = isRebal ? "t-rebal" : (isOff ? "t-off" : "t-on");
+    const label = isRebal ? t("log.rebal")
+                : isOff ? t("log.toport")
+                : `${t("log.tosleeve")} ${a.tag.replace(/^to\s+/, "")}`;
     return `<div class="logline"><span class="d">${a.date}</span>` +
-           `<span class="t t-${a.tag.replace(/\s+/g, "-")}">${a.tag}</span>` +
-           `<span class="h">H=${a.hurst.toFixed(2)}</span>` +
-           `<span class="w">${legs}</span></div>`;
+           `<span class="t ${cls}">${esc(label)}</span>` +
+           `<span class="w">${esc(legs)}</span></div>`;
   }).join("");
 }
 
@@ -525,8 +554,105 @@ function setFrac(key) {
  * of calls at each site, a theme flip redrew the chart and the donut but not
  * the heat map or the swatches, which then kept the previous theme's colours
  * until a reload. */
+/* Text built in JS rather than carried by data-i18n. Split out of bootPanel
+ * because switching language must refresh it: leaving it there meant the
+ * sleeve pill kept the previous language's wording after a switch. */
+function renderLabels() {
+  const d = AW.data;
+  if (!d) return;
+  // Heading follows the translation table, not the payload, so it matches the
+  // tab that opened it.
+  document.getElementById("aw-title").textContent =
+    t("panel." + (AW.kind || "base")) || d.title || "All Weather 9";
+  // Every place the sleeve instrument is named follows the payload, so the
+  // leveraged tab never claims to be holding QQQ.
+  const sym = d.sleeve_symbol || "QQQ";
+  for (const id of ["aw-frac-label", "aw-frac-hint"]) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = sym;
+  }
+  const pill = document.getElementById("aw-sleeve");
+  if (pill) pill.textContent = sym + " " +
+    (d.sleeve_on ? t("sleeve.on") : t("sleeve.off"));
+}
+
+/* When the next scheduled refresh is due. Hours come from the server (the
+ * scheduler runs in the server's local time, which for a desktop install is
+ * this machine), and the next occurrence is worked out against the local
+ * clock so it stays right without the page reloading. */
+/* Short zone name ("CDT", "GMT+8"). Always read through en-US: zh-CN renders
+ * the same zone as "GMT-5", and the familiar abbreviation is the point. */
+function tzShort(when) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
+      .formatToParts(when);
+    const p = parts.find(x => x.type === "timeZoneName");
+    return p ? p.value : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+/* One stamp format for both the last update and the next one.
+ *
+ * Composed from parts rather than one toLocaleString call: asking zh-CN for a
+ * zone name yields "2026年7月29日 GMT-5 06:00", with the zone wedged into the
+ * middle. Built this way it reads
+ *     Jul 29, 2026, 06:00 AM CDT
+ *     2026年7月29日 06:00 CDT
+ * and follows the UI language rather than the browser's own locale, so
+ * switching to Chinese restyles the date too. */
+function fmtStamp(when) {
+  const zh = currentLang() === "zh";
+  const loc = zh ? "zh-CN" : undefined;
+  const date = when.toLocaleDateString(loc,
+    { year: "numeric", month: "short", day: "numeric" });
+  const time = when.toLocaleTimeString(loc,
+    { hour: "2-digit", minute: "2-digit" });
+  const zone = tzShort(when);
+  return date + (zh ? " " : ", ") + time + (zone ? " " + zone : "");
+}
+
+function nextUpdateAt() {
+  let hours = [];
+  try { hours = JSON.parse(document.body.dataset.updateHours || "[]"); }
+  catch (e) { hours = []; }
+  if (!hours.length) return null;
+  hours = hours.slice().sort((a, b) => a - b);
+
+  // The configured hours are SERVER-local. Work in server-local time to pick
+  // the next one, then hand back a real instant so it displays in the
+  // viewer's own zone. On a single-machine install the two offsets match and
+  // this reduces to the obvious thing.
+  const parsed = parseInt(document.body.dataset.serverOffset || "", 10);
+  const nowMs = Date.now();
+  const serverOff = Number.isNaN(parsed)
+    ? -new Date(nowMs).getTimezoneOffset() : parsed;
+  const shift = serverOff * 60000;
+
+  // A Date shifted by the offset, read through its UTC getters, behaves as
+  // the server's wall clock.
+  const sNow = new Date(nowMs + shift);
+  for (let day = 0; day < 2; day++) {
+    for (const h of hours) {
+      const sWhen = Date.UTC(sNow.getUTCFullYear(), sNow.getUTCMonth(),
+                             sNow.getUTCDate() + day, h, 0, 0, 0);
+      const when = new Date(sWhen - shift);      // back to a true instant
+      if (when.getTime() > nowMs) return when;
+    }
+  }
+  return null;
+}
+
+/* The next refresh, formatted like the update stamp above it. */
+function nextUpdateText() {
+  const when = nextUpdateAt();
+  return when ? fmtStamp(when) : t("sched.manual");
+}
+
 function renderThemed({ withLog = false } = {}) {
   if (!AW.data) return;
+  renderLabels();      // language-dependent wording
   renderStats();       // legend swatches are inline-coloured
   renderMonthly();     // heat-map blocks are inline-coloured
   renderChart();
@@ -535,9 +661,15 @@ function renderThemed({ withLog = false } = {}) {
 }
 
 /* ---------- boot --------------------------------------------------------- */
-async function loadStrategy() {
+async function loadStrategy(kind = "base") {
   const host = document.getElementById("aw-panel");
   const msg = document.getElementById("aw-message");
+  // Switching tabs re-renders from a payload already in memory if we have it.
+  if (kind !== AW.kind) {
+    AW.kind = kind;
+    AW.data = AW.cache[kind] || null;
+    if (AW.data) { bootPanel(); return; }
+  }
   if (AW.data) {
     renderChart(); renderAllocation();
     if (typeof Plotly !== "undefined") {
@@ -549,7 +681,7 @@ async function loadStrategy() {
   msg.hidden = false;
   msg.innerHTML = "Loading the strategy\u2026";
   try {
-    const resp = await fetch("/api/strategy");
+    const resp = await fetch("/api/strategy?kind=" + encodeURIComponent(AW.kind));
     if (!resp.ok) {
       const detail = (await resp.json().catch(() => ({}))).detail || resp.statusText;
       msg.innerHTML = "<strong>Strategy not available.</strong> " + detail +
@@ -565,9 +697,16 @@ async function loadStrategy() {
     return;
   }
 
+  bootPanel();
+  wireOnce();
+}
+
+/* Paint the panel from AW.data. Safe to call repeatedly -- a tab switch does
+ * exactly this, with a different payload. */
+function bootPanel() {
   const d = AW.data, n = d.dates.length;
-  msg.hidden = true;
-  host.hidden = false;
+  document.getElementById("aw-message").hidden = true;
+  document.getElementById("aw-panel").hidden = false;
 
   // A cached payload built by older code can look perfectly healthy while
   // missing data (this is how a lifted 250-entry log cap stayed invisible).
@@ -584,34 +723,53 @@ async function loadStrategy() {
     stale.hidden = true;
   }
 
+  renderLabels();
   document.getElementById("aw-asof").textContent = d.as_of;
 
   const sel = document.getElementById("aw-frac");
+  // Show 50% / 75% / 100%; the option VALUE stays the payload's key ("0.50")
+  // so nothing downstream has to know about the friendlier label.
   sel.innerHTML = d.fracs.map(f =>
-    `<option value="${f}">${f}</option>`).join("");
-  const wantFrac = document.body.dataset.defaultFrac || d.default_frac;
+    `<option value="${f}">${Math.round(parseFloat(f) * 100)}%</option>`).join("");
+  // Per-kind first, then the single legacy value, then the payload's own.
+  let perKind = {};
+  try { perKind = JSON.parse(document.body.dataset.defaultFracs || "{}"); }
+  catch (e) { perKind = {}; }
+  const wantFrac = perKind[AW.kind]
+                   || document.body.dataset.defaultFrac
+                   || d.default_frac;
   AW.frac = d.fracs.includes(wantFrac) ? wantFrac : d.fracs[0];
   sel.value = AW.frac;
-  sel.addEventListener("change", () => setFrac(sel.value));
+  sel.onchange = () => setFrac(sel.value);
   const firstAdj = variant().allocation_date || d.as_of;
   document.getElementById("aw-alloc-date").textContent = firstAdj;
   document.getElementById("aw-lastadj").textContent = firstAdj;
-  const sleeve = document.getElementById("aw-sleeve");
-  sleeve.textContent = d.sleeve_on ? "QQQ sleeve ON" : "QQQ sleeve OFF";
-  sleeve.className = "pill " + (d.sleeve_on ? "pill-on" : "pill-off");
-  document.getElementById("aw-hurst").textContent =
-    d.hurst === null ? "n/a" : d.hurst.toFixed(2);
-  document.getElementById("aw-rebals").textContent = d.n_rebalances;
-  document.getElementById("aw-bil").textContent =
-    d.bil_cagr === null || d.bil_cagr === undefined
-      ? "n/a" : (d.bil_cagr * 100).toFixed(2) + "%/yr";
+  document.getElementById("aw-sleeve").className =
+    "pill " + (d.sleeve_on ? "pill-on" : "pill-off");
 
+
+
+  document.getElementById("aw-from").max = n - 1;
+  document.getElementById("aw-to").max = n - 1;
+
+  const defYears = parseFloat(document.body.dataset.defaultYears)
+                   || d.default_years || 5;
+  document.querySelectorAll(".aw-quick").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.years === String(defYears))));
+  setYears(defYears);
+  renderAllocation();
+  renderLog();
+}
+
+/* Listeners are bound once for the life of the page, not per payload. */
+let _wired = false;
+function wireOnce() {
+  if (_wired) return;
+  _wired = true;
   const from = document.getElementById("aw-from");
   const to = document.getElementById("aw-to");
-  from.max = to.max = n - 1;
   from.addEventListener("input", () => setRange(+from.value, AW.i1));
   to.addEventListener("input", () => setRange(AW.i0, +to.value));
-
   document.querySelectorAll(".aw-quick").forEach(b => {
     b.addEventListener("click", () => {
       document.querySelectorAll(".aw-quick").forEach(x =>
@@ -626,14 +784,7 @@ async function loadStrategy() {
   document.getElementById("aw-amount").addEventListener("input", renderAllocation);
   document.getElementById("aw-export").addEventListener("click", () => {
     window.location = "/api/strategy/allocations.csv?amount=" +
-                      currentAmount() + "&frac=" + encodeURIComponent(AW.frac);
+                      currentAmount() + "&frac=" + encodeURIComponent(AW.frac) +
+                      "&kind=" + encodeURIComponent(AW.kind);
   });
-
-  const defYears = parseFloat(document.body.dataset.defaultYears)
-                   || d.default_years || 5;
-  document.querySelectorAll(".aw-quick").forEach(b =>
-    b.setAttribute("aria-pressed", String(b.dataset.years === String(defYears))));
-  setYears(defYears);
-  renderAllocation();
-  renderLog();
 }

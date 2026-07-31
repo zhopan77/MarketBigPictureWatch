@@ -26,8 +26,37 @@ DATA_DIR = Path(os.environ.get("MW_DATA_DIR", BASE_DIR / "data"))
 # Scheduler, cron, a hosting service's cron job) runs `python -m app.update`.
 ENABLE_SCHEDULER = os.environ.get("MW_ENABLE_SCHEDULER", "1") == "1"
 
-# Local time hour (0-23) for the in-process daily update.
-UPDATE_HOUR = int(os.environ.get("MW_UPDATE_HOUR", "6"))
+# Local-time hours (0-23) for the in-process update, comma separated.
+# Default: early morning for the overnight data, and 19:00 so the evening
+# view already reflects the day's close.
+#
+# MW_UPDATE_HOUR is the older single-hour setting. If it is set it is merged
+# in rather than ignored, so an existing .env keeps working and still gains
+# the evening run.
+def _parse_hours(raw: str) -> list[int]:
+    out = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            h = int(part)
+        except ValueError:
+            continue
+        if 0 <= h <= 23 and h not in out:
+            out.append(h)
+    return sorted(out)
+
+
+UPDATE_HOURS = _parse_hours(os.environ.get("MW_UPDATE_HOURS", "6,19"))
+_legacy = os.environ.get("MW_UPDATE_HOUR")
+if _legacy:
+    UPDATE_HOURS = sorted(set(UPDATE_HOURS) | set(_parse_hours(_legacy)))
+if not UPDATE_HOURS:
+    UPDATE_HOURS = [6, 19]
+
+# Backwards compatible alias for anything still reading the single value.
+UPDATE_HOUR = UPDATE_HOURS[0]
 
 # ------------------------------------------------------------------
 # Future subscription support.

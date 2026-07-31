@@ -12,8 +12,8 @@
   --gain: #00874a;
   --hairline: #e0dfd8;
   /* plot colours, read by the charts so they follow the theme */
-  --grid: rgba(150,150,150,0.45);
-  --axis: #16181d;
+  --grid: rgba(120,130,145,0.22);
+  --axis: #9aa3b0;
   --fill: rgba(0,135,74,0.20);
   --fill-loss: rgba(212,0,33,0.16);
   /* monthly heatmap: neutral, +10%, -10% */
@@ -88,6 +88,10 @@ body {
   text-align: right;
   white-space: nowrap;
 }
+/* second line of the stamp: the next scheduled refresh, set quieter than the
+   last-update time since it is a reference rather than a fact about the data */
+.stamp .stamp-next { opacity: 0.75; }
+.stamp .stamp-label.stamp-next { margin-top: 0.15rem; }
 .stamp-label {
   display: block;
   color: var(--slate);
@@ -406,8 +410,9 @@ main { padding: 0.75rem 1rem 1.5rem; }
   font-size: 0.64rem; padding: 0 0.32rem; border-radius: 2px;
   border: 1px solid var(--hairline); color: var(--slate);
 }
-.logline .t-to-QQQ { color: var(--green); border-color: var(--green); }
-.logline .t-to-PORT { color: var(--loss); border-color: var(--loss); }
+/* keyed on what happened, not on which ETF, so a QLD sleeve styles the same */
+.logline .t-on { color: var(--green); border-color: var(--green); }
+.logline .t-off { color: var(--loss); border-color: var(--loss); }
 .logline .h { color: var(--slate); }
 .logline .w { flex: 1; }
 
@@ -576,4 +581,37 @@ body { transition: background-color 0.18s ease, color 0.18s ease; }
   font-family: var(--mono); font-weight: 400; text-transform: none;
   letter-spacing: 0; font-size: 0.68rem; color: var(--slate);
   margin-left: 0.5rem;
+}
+
+
+/* ---------- language picker ---------- */
+.lang-pick { display: flex; gap: 0.15rem; align-items: center; }
+.lang-pick label {
+  font-family: var(--mono); font-size: 0.7rem; color: var(--slate);
+  padding: 0.15rem 0.4rem; border-radius: 3px; cursor: pointer;
+  border: 1px solid transparent; display: flex; align-items: center; gap: 0.25rem;
+}
+.lang-pick label:hover { color: var(--ink); }
+.lang-pick label:has(input:checked) {
+  color: var(--green); border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.lang-pick input { accent-color: var(--green); cursor: pointer; }
+.brand h1 .accent { color: var(--green); }
+/* Latin needs a word space between the two halves of the title; CJK does not,
+   so it is inserted by CSS rather than baked into the markup. */
+.brand h1 .accent::before { content: "\00a0"; }
+html[lang="zh-Hans"] .brand h1 .accent::before { content: ""; }
+/* CJK needs a little more line height than the Latin display face */
+html[lang="zh-Hans"] { --cjk: 1; }
+html[lang="zh-Hans"] .brand h1,
+html[lang="zh-Hans"] .tab-title { letter-spacing: 0; }
+
+/* The language picker widened the top-right cluster past a phone viewport.
+   Let it wrap instead of pushing the page sideways. */
+.topbar-right { flex-wrap: wrap; justify-content: flex-end; row-gap: 0.35rem; }
+@media (max-width: 640px) {
+  .topbar { flex-wrap: wrap; row-gap: 0.5rem; }
+  .topbar-right { width: 100%; justify-content: flex-start; gap: 0.8rem; }
+  .stamp { text-align: left; }
 }

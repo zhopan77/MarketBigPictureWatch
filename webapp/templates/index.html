@@ -17,17 +17,22 @@
 <script>
 (function () {
   try {
-    if (localStorage.getItem("mw-theme") === "dark")
+    // Dark is the default; only an explicit "light" choice opts out, so a
+    // first visit and a returning dark user both land on dark with no flash.
+    if (localStorage.getItem("mw-theme") !== "light")
       document.documentElement.dataset.theme = "dark";
   } catch (e) { /* private mode: fall back to light */ }
 })();
 </script>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
 <script src="https://cdn.plot.ly/plotly-3.1.0.min.js" charset="utf-8"></script>
 </head>
 <body data-default-frac="{{ strategy_defaults.frac }}"
       data-default-years="{{ strategy_defaults.years }}"
-      data-payload-version="{{ strategy_payload_version }}">
+      data-payload-version="{{ strategy_payload_version }}"
+      data-default-fracs='{{ strategy_default_fracs|tojson }}'
+      data-update-hours='{{ update_hours|tojson }}'
+      data-server-offset="{{ server_utc_offset }}">
 <header class="topbar">
   <div class="brand">
     <img class="logo logo-light" src="/static/einnia.svg" alt="Einnia"
@@ -35,20 +40,28 @@
     <img class="logo logo-dark" src="/static/einnia-dark.svg" alt=""
          width="146" height="201" decoding="async" aria-hidden="true">
     <div class="brand-text">
-      <h1>Market <span>Big&nbsp;Picture</span> Watch</h1>
-      <p class="tagline">Thirty years of markets, money, and the real economy</p>
+      <h1><span data-i18n="app.title_1">Market Big Picture</span><span
+        class="accent" data-i18n="app.title_2">and Long-term Strategies</span></h1>
+      <p class="tagline" data-i18n="app.tagline">See the big picture. Weather
+        the market. Build wealth steadily.</p>
     </div>
   </div>
   <div class="topbar-right">
+  <div class="lang-pick" role="radiogroup" aria-label="Language">
+    <label><input type="radio" name="lang" value="en"> EN</label>
+    <label><input type="radio" name="lang" value="zh"> 中文</label>
+  </div>
   <label class="theme-toggle" for="theme-switch">
-    <input type="checkbox" id="theme-switch"> Dark mode
+    <input type="checkbox" id="theme-switch"> <span data-i18n="app.dark">Dark mode</span>
   </label>
   <div class="stamp" id="stamp">
     {% if meta %}
-      <span class="stamp-label">data updated</span>
+      <span class="stamp-label" data-i18n="app.updated">data updated</span>
       <span class="stamp-value" id="updated-at" data-iso="{{ meta.updated_at }}">{{ meta.updated_at[:10] }}</span>
+      <span class="stamp-label stamp-next" data-i18n="fact.nextupdate">next update</span>
+      <span class="stamp-value stamp-next" id="next-update">&mdash;</span>
     {% else %}
-      <span class="stamp-label">no data yet</span>
+      <span class="stamp-label" data-i18n="app.nodata">no data yet</span>
     {% endif %}
   </div>
   </div>
@@ -59,14 +72,16 @@
   <button class="tab" role="tab" data-slug="{{ f.slug }}"
           aria-selected="{{ 'true' if loop.first else 'false' }}">
     <span class="tab-index">{{ '%02d' % loop.index }}</span>
-    <span class="tab-title">{{ f.title }}</span>
+    <span class="tab-title" data-i18n="tab.{{ f.slug }}">{{ f.title }}</span>
   </button>
   {% endfor %}
-  <button class="tab" role="tab" data-slug="{{ strategy_tab.slug }}"
-          aria-selected="false">
-    <span class="tab-index">{{ '%02d' % (figures|length + 1) }}</span>
-    <span class="tab-title">{{ strategy_tab.title }}</span>
+  {% for t in strategy_tabs %}
+  <button class="tab" role="tab" data-slug="{{ t.slug }}"
+          data-kind="{{ t.kind }}" aria-selected="false">
+    <span class="tab-index">{{ '%02d' % (figures|length + loop.index) }}</span>
+    <span class="tab-title" data-i18n="tab.{{ t.slug }}">{{ t.title }}</span>
   </button>
+  {% endfor %}
 </nav>
 
 <main>
@@ -82,21 +97,20 @@
       <p id="aw-stale" class="aw-stale" hidden></p>
       <div class="aw-head">
         <div>
-          <h2>All Weather 9 <span class="ver">v3.9.2</span></h2>
+          <h2><span id="aw-title">All Weather 9</span>
+            <span class="ver">v3.9.2</span></h2>
         </div>
         <div class="aw-frac-pick">
-          <label for="aw-frac">QQQ sleeve fraction</label>
+          <label for="aw-frac"><span id="aw-frac-label">QQQ</span> <span data-i18n="sleeve.fraction">sleeve fraction</span></label>
           <select id="aw-frac"></select>
-          <span class="hint">share of the book tilted into QQQ while the
-            sleeve is on</span>
+          <span class="hint"><span data-i18n="sleeve.hint_a">share of the book
+            tilted into</span> <span id="aw-frac-hint">QQQ</span>
+            <span data-i18n="sleeve.hint_b">while the sleeve is on</span></span>
         </div>
         <dl class="aw-facts">
-          <div><dt>through</dt><dd id="aw-asof">&mdash;</dd></div>
-          <div><dt>Hurst</dt><dd id="aw-hurst">&mdash;</dd></div>
-          <div><dt>rebalances</dt><dd id="aw-rebals">&mdash;</dd></div>
-          <div><dt>BIL carry</dt><dd id="aw-bil">&mdash;</dd></div>
-          <div><dt>sleeve</dt><dd><span id="aw-sleeve" class="pill">&mdash;</span></dd></div>
-          <div><dt>last adjustment</dt><dd id="aw-lastadj" class="strong">&mdash;</dd></div>
+          <div><dt data-i18n="fact.through">through</dt><dd id="aw-asof">&mdash;</dd></div>
+          <div><dt data-i18n="fact.sleeve">sleeve</dt><dd><span id="aw-sleeve" class="pill">&mdash;</span></dd></div>
+          <div><dt data-i18n="fact.lastadj">last adjustment</dt><dd id="aw-lastadj" class="strong">&mdash;</dd></div>
         </dl>
       </div>
 
@@ -109,17 +123,17 @@
           {% for y in [1, 3, 5, 10, 15] %}
           <button class="aw-quick" data-years="{{ y }}" aria-pressed="false">{{ y }}y</button>
           {% endfor %}
-          <button class="aw-quick" data-years="max" aria-pressed="false">Max</button>
+          <button class="aw-quick" data-years="max" aria-pressed="false" data-i18n="range.max">Max</button>
         </div>
         <label class="aw-scale">
-          <input type="checkbox" id="aw-log-scale"> log scale
+          <input type="checkbox" id="aw-log-scale"> <span data-i18n="chart.logscale">log scale</span>
         </label>
       </div>
 
       <div class="aw-range">
-        <label><span class="rl">begin</span> <output id="aw-from-label">&mdash;</output>
+        <label><span class="rl" data-i18n="range.begin">begin</span> <output id="aw-from-label">&mdash;</output>
           <input type="range" id="aw-from" min="0" max="1" value="0"></label>
-        <label><span class="rl">end</span> <output id="aw-to-label">&mdash;</output>
+        <label><span class="rl" data-i18n="range.end">end</span> <output id="aw-to-label">&mdash;</output>
           <input type="range" id="aw-to" min="0" max="1" value="1"></label>
       </div>
 
@@ -127,33 +141,36 @@
 
       <div class="aw-alloc">
         <div class="aw-alloc-chart">
-          <h3>Allocation <span class="asof">as of <span id="aw-alloc-date">&mdash;</span></span></h3>
+          <h3><span data-i18n="alloc.title">Allocation</span> <span class="asof"><span data-i18n="alloc.asof">as of</span> <span id="aw-alloc-date">&mdash;</span></span></h3>
           <div id="aw-pie"></div>
         </div>
         <div class="aw-alloc-table">
           <div class="aw-export">
-            <label>invest <span class="cur">$</span>
+            <label><span data-i18n="alloc.invest">invest</span> <span class="cur">$</span>
               <input type="number" id="aw-amount" value="100000" min="1" step="1000">
             </label>
-            <button id="aw-export" class="btn">Export allocation CSV</button>
+            <button id="aw-export" class="btn" data-i18n="alloc.export">Export allocation CSV</button>
           </div>
           <table class="aw-holdings">
-            <thead><tr><th>Symbol</th><th>Holding</th><th class="r">Weight</th>
-              <th class="r">Amount</th><th class="r">Price</th><th class="r">Shares</th></tr></thead>
+            <thead><tr><th data-i18n="alloc.symbol">Symbol</th>
+              <th data-i18n="alloc.holding">Holding</th>
+              <th class="r" data-i18n="alloc.weight">Weight</th>
+              <th class="r" data-i18n="alloc.amount">Amount</th>
+              <th class="r" data-i18n="alloc.price">Price</th>
+              <th class="r" data-i18n="alloc.shares">Shares</th></tr></thead>
             <tbody id="aw-alloc-body"></tbody>
           </table>
         </div>
       </div>
 
       <section class="aw-monthly">
-        <h3>Monthly returns
-          <span class="asof">strategy, % &mdash; selected period; the first
-          month is partial unless the period starts on a month boundary</span></h3>
+        <h3><span data-i18n="monthly.title">Monthly returns</span>
+          <span class="asof" data-i18n="monthly.caption">strategy, %</span></h3>
         <div class="aw-monthly-scroll"><table id="aw-monthly"></table></div>
       </section>
 
       <details class="aw-logbox">
-        <summary>Adjustment log &mdash; every rebalance and sleeve flip
+        <summary><span data-i18n="log.title">Adjustment log</span>
           <span class="extent" id="aw-log-extent"></span></summary>
         <div id="aw-log" class="aw-loglines"></div>
       </details>
@@ -162,18 +179,24 @@
 </main>
 
 <footer class="foot">
-  <span>Sources: FRED &middot; Yahoo Finance &middot; multpl.com</span>
-  <span>Not investment advice.</span>
+  <span data-i18n="foot.sources">Sources: FRED &middot; Yahoo Finance &middot; multpl.com</span>
+  <span data-i18n="foot.disclaimer">Not investment advice.</span>
 </footer>
 
-<script src="/static/strategy.js"></script>
+<script src="/static/i18n.js?v={{ asset_v }}"></script>
+<script src="/static/strategy.js?v={{ asset_v }}"></script>
 <script>
 const plotDiv = document.getElementById("plot");
 const msgDiv = document.getElementById("message");
 const awRoot = document.getElementById("aw-root");
 const tabs = Array.from(document.querySelectorAll(".tab"));
 const cache = new Map();
-const STRATEGY_SLUG = "all-weather";
+
+// Figures are cached per slug AND per language, since the two languages are
+// different files. Every lookup must agree on the key -- a stale bare-slug
+// read here is what silently stopped theme switching from repainting them.
+const figKey = slug => slug + "|" + currentLang();
+const STRATEGY_SLUGS = {"all-weather": "base", "all-weather-lev": "leverage"};
 
 function showMessage(html) {
   plotDiv.hidden = true;
@@ -186,21 +209,24 @@ async function showFigure(slug) {
                                    String(t.dataset.slug === slug)));
   history.replaceState(null, "", "#" + slug);
 
-  // The strategy tab is its own panel, not a pre-rendered figure.
-  const isStrategy = slug === STRATEGY_SLUG;
-  awRoot.hidden = !isStrategy;
-  if (isStrategy) {
+  // The strategy tabs are their own panel, not pre-rendered figures. Both
+  // share one panel; the kind selects which cached payload it shows.
+  const kind = STRATEGY_SLUGS[slug];
+  awRoot.hidden = !kind;
+  if (kind) {
     plotDiv.hidden = true;
     msgDiv.hidden = true;
-    await loadStrategy();
+    await loadStrategy(kind);
     return;
   }
 
   try {
-    let figure = cache.get(slug);
+    const ckey = figKey(slug);
+    let figure = cache.get(ckey);
     if (!figure) {
       showMessage("Loading\u2026");
-      const resp = await fetch("/api/figures/" + slug);
+      const resp = await fetch("/api/figures/" + slug +
+                               "?lang=" + encodeURIComponent(currentLang()));
       if (!resp.ok) {
         const detail = (await resp.json().catch(() => ({}))).detail || resp.statusText;
         showMessage("<strong>Figure unavailable.</strong> " + detail +
@@ -209,10 +235,18 @@ async function showFigure(slug) {
         return;
       }
       figure = await resp.json();
-      cache.set(slug, figure);
+      // The server tells us which language it actually had on disk.
+      figure._langFallback =
+        currentLang() !== "en" && resp.headers.get("X-Figure-Lang") === "en";
+      cache.set(ckey, figure);
     }
     msgDiv.hidden = true;
     plotDiv.hidden = false;
+    if (figure._langFallback) {
+      msgDiv.hidden = false;
+      msgDiv.innerHTML = "<p class='warn-inline'>" + t("msg.figlang") +
+        " <code>python -m app.update --rebuild-only</code></p>";
+    }
     await Plotly.react(plotDiv, figure.data, figure.layout,
                        {responsive: true, displaylogo: false});
     applyFigureTheme(plotDiv, figure);
@@ -222,6 +256,29 @@ async function showFigure(slug) {
 }
 
 tabs.forEach(t => t.addEventListener("click", () => showFigure(t.dataset.slug)));
+
+// ---- language ----
+// Static markup is swapped by applyLanguage(); anything generated in JS is
+// re-rendered afterwards, which is what the callback is for.
+function repaintForLanguage() {
+  const slug = currentSlug();
+  paintUpdatedAt();
+  paintNextUpdate();
+  if (STRATEGY_SLUGS[slug] && AW.data) {
+    renderThemed({ withLog: true });
+  } else if (slug) {
+    // Chart text is baked into the figure JSON, so a language change means
+    // fetching the other language's file, not re-labelling in place.
+    showFigure(slug);
+  }
+}
+
+const startLang = initLanguage();
+document.querySelectorAll('input[name="lang"]').forEach(r => {
+  r.checked = r.value === startLang;
+  r.addEventListener("change", () => applyLanguage(r.value, repaintForLanguage));
+});
+applyLanguage(startLang);
 
 // ---- dark mode ----------------------------------------------------------
 // The stylesheet does all the work through custom properties; this only
@@ -240,10 +297,10 @@ function setTheme(dark) {
   themeSwitch.checked = dark;
   try { localStorage.setItem("mw-theme", dark ? "dark" : "light"); } catch (e) {}
   const slug = currentSlug();
-  if (slug === STRATEGY_SLUG) {
+  if (STRATEGY_SLUGS[slug]) {
     renderThemed();
   } else {
-    const fig = cache.get(slug);
+    const fig = cache.get(figKey(slug));
     if (fig) applyFigureTheme(plotDiv, fig);
   }
 }
@@ -251,14 +308,25 @@ function setTheme(dark) {
 themeSwitch.checked = document.documentElement.dataset.theme === "dark";
 themeSwitch.addEventListener("change", () => setTheme(themeSwitch.checked));
 
-// local-time render of the update stamp
-const stampEl = document.getElementById("updated-at");
-if (stampEl) {
-  const d = new Date(stampEl.dataset.iso);
-  if (!isNaN(d)) stampEl.textContent = d.toLocaleString(undefined,
-    {year: "numeric", month: "short", day: "numeric",
-     hour: "2-digit", minute: "2-digit"});
+// Next scheduled refresh, in the header so it is visible on every tab.
+// Recomputed on a timer so an all-day window does not show a stale time,
+// and on language change so "manual" follows the locale.
+function paintNextUpdate() {
+  const el = document.getElementById("next-update");
+  if (el) el.textContent = nextUpdateText();
 }
+paintNextUpdate();
+setInterval(paintNextUpdate, 60000);
+
+// Both stamps share fmtStamp(), so the two lines always match in shape, and
+// both follow the UI language rather than the browser's locale.
+function paintUpdatedAt() {
+  const el = document.getElementById("updated-at");
+  if (!el) return;
+  const d = new Date(el.dataset.iso);
+  if (!isNaN(d)) el.textContent = fmtStamp(d);
+}
+paintUpdatedAt();
 
 const initial = location.hash.slice(1);
 const slugs = tabs.map(t => t.dataset.slug);

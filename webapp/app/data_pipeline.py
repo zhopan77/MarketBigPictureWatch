@@ -13,6 +13,7 @@ save_data()/load_data() persist it as a pickle under DATA_DIR.
 from datetime import date, timedelta
 from io import StringIO
 import pickle
+import sys
 
 import pandas as pd
 import requests
@@ -264,12 +265,61 @@ def collect_all_data(log=print) -> dict:
     return all_data
 
 
+class DataCacheError(RuntimeError):
+    """The cached pickle exists but cannot be read in this environment."""
+
+
+META_SIDECAR = PICKLE_PATH.with_suffix(".meta.json")
+
+
 def save_data(all_data: dict) -> None:
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(PICKLE_PATH, "wb") as f:
         pickle.dump(all_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    # Record who wrote it. A pickle of pandas objects is only readable by a
+    # compatible pandas, and without this the failure message cannot say which
+    # two versions disagreed.
+    import json as _json
+    import numpy as _np
+    import pandas as _pd
+    META_SIDECAR.write_text(_json.dumps({
+        "pandas": _pd.__version__,
+        "numpy": _np.__version__,
+        "python": sys.version.split()[0],
+    }, indent=2), encoding="utf-8")
+
+
+def _writer_versions() -> str:
+    import json as _json
+    try:
+        m = _json.loads(META_SIDECAR.read_text(encoding="utf-8"))
+        return f"pandas {m.get('pandas', '?')} / numpy {m.get('numpy', '?')}"
+    except Exception:
+        return "an unknown version"
 
 
 def load_data() -> dict:
-    with open(PICKLE_PATH, "rb") as f:
-        return pickle.load(f)
+    """Read the cached download.
+
+    Pickled pandas objects are not portable across pandas versions: pandas 3
+    stores date columns at second/microsecond resolution, and pandas 2 cannot
+    restore a resolution it never produces, which surfaces as an opaque
+    NotImplementedError deep inside the unpickler. Translate that into
+    something actionable instead.
+    """
+    import numpy as _np
+    import pandas as _pd
+    try:
+        with open(PICKLE_PATH, "rb") as f:
+            return pickle.load(f)
+    except Exception as exc:
+        raise DataCacheError(
+            f"The cached market data at {PICKLE_PATH} cannot be read here.\n"
+            f"  written by : {_writer_versions()}\n"
+            f"  reading with: pandas {_pd.__version__} / numpy {_np.__version__}\n"
+            f"  underlying  : {type(exc).__name__}: {exc}\n"
+            f"A pickle of pandas objects is only readable by a compatible "
+            f"pandas, so this usually means the cache was written from a "
+            f"different environment (a .venv vs conda base, say). Re-running "
+            f"the full update rewrites it."
+        ) from exc

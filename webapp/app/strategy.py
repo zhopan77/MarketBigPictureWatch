@@ -62,6 +62,10 @@ log = logging.getLogger(__name__)
 # Universe.  Index order MUST match the Lite-C IDX_* constants.
 TICKERS = ["SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "GLD", "XLE"]
 CASH_TICKER = "BIL"          # residual cash weight is held here (cash carry)
+# The leveraged variant swaps the sleeve's instrument. The SIGNAL still comes
+# from QQQ -- QLD is 2x QQQ's daily return, so it carries no extra information
+# about trend or persistence, only extra noise and decay.
+LEVERAGE_SLEEVE = "QLD"
 N_ASSETS = 9
 N_DIMS = 10                  # 9 ETFs + 1 cash dimension
 IDX_CASH = 9
@@ -79,6 +83,7 @@ HOLDING_NAMES = {
     "GLD": "SPDR Gold Shares",
     "XLE": "Energy Select Sector SPDR Fund",
     "BIL": "SPDR Bloomberg 1-3 Month T-Bill ETF",
+    "QLD": "ProShares Ultra QQQ (2x)",
 }
 
 # ---- objective / optimizer ----
@@ -359,34 +364,46 @@ class BacktestResult:
 
 
 def _effective_book(weight: np.ndarray, sleeve_on: bool,
-                    sleeve_frac: float = SLEEVE_FRAC) -> np.ndarray:
-    """Optimizer weights -> the book actually held, length N_ASSETS+1.
+                    sleeve_frac: float = SLEEVE_FRAC,
+                    n_legs: int = N_ASSETS + 1,
+                    sleeve_leg: int = IDX_QQQ) -> np.ndarray:
+    """Optimizer weights -> the book actually held.
 
     The AllWeather book (9 ETFs + the BIL cash leg) is scaled uniformly by
     aw_frac so every leg keeps its RELATIVE proportion -- the optimizer's
     solution is untouched, the whole book is just levered down to make room
-    for the sleeve.  The sleeve then adds on TOP of QQQ's scaled weight (it
-    holds the same QQQ the optimizer already trades).  Weights sum to exactly
-    1: aw_frac * 1 + sleeve_frac = 1, so there is never account leverage.
+    for the sleeve.  Weights sum to exactly 1: aw_frac * 1 + sleeve_frac = 1,
+    so the ACCOUNT is never levered.
+
+    `sleeve_leg` says where the sleeve's weight goes. For the plain strategy
+    that is QQQ's own index, so the sleeve simply adds on top of the QQQ the
+    optimizer already holds. For the leveraged variant it is a separate QLD
+    leg appended after cash -- QQQ keeps whatever the optimizer gave it, and
+    the sleeve buys QLD alongside. Note that while the account holds no
+    margin, holding a 2x fund means the BOOK's economic exposure exceeds
+    100% whenever that sleeve is on.
     """
     sleeve = sleeve_frac if sleeve_on else 0.0
     aw = 1.0 - sleeve
-    held = np.empty(N_ASSETS + 1)
+    held = np.zeros(n_legs)
     held[:N_ASSETS] = aw * weight[:N_ASSETS]
-    held[IDX_QQQ] += sleeve
     held[N_ASSETS] = aw * weight[IDX_CASH]        # the BIL leg
+    held[sleeve_leg] += sleeve
     return held
 
 
 def run_backtest(px: dict[str, pd.DataFrame], vix: pd.Series,
                  log_fn=log.info,
-                 sleeve_frac: float = SLEEVE_FRAC) -> BacktestResult:
+                 sleeve_frac: float = SLEEVE_FRAC,
+                 sleeve_symbol: str = "QQQ") -> BacktestResult:
     """Run the strategy over every bar for which all instruments have data.
 
     px: {ticker: DataFrame with open/high/low/close}, all sharing one index.
     vix: VIX close indexed by the same trading calendar (already forward
          filled); read one bar lagged, exactly like Zorro's GateVIX[1].
-    sleeve_frac: fraction of the book tilted into QQQ while the sleeve is ON.
+    sleeve_frac: fraction of the book tilted into the sleeve while it is ON.
+    sleeve_symbol: what the sleeve buys. "QQQ" (default) folds into the
+        existing QQQ leg; anything else (e.g. "QLD") becomes an extra leg.
 
     NOTE: sleeve_frac affects ONLY the effective book, never the optimizer.
     The optimizer reads returns, momentum and VIX; the sleeve ON/OFF state
@@ -400,8 +417,14 @@ def run_backtest(px: dict[str, pd.DataFrame], vix: pd.Series,
     n = len(idx)
     rng = np.random.default_rng(RNG_SEED)
 
-    # ---- price matrices, columns in IDX_* order, cash leg last ----
-    all_syms = TICKERS + [CASH_TICKER]
+    # ---- price matrices, columns in IDX_* order, cash leg, then any
+    #      separate sleeve instrument ----
+    extra_sleeve = sleeve_symbol not in TICKERS
+    all_syms = TICKERS + [CASH_TICKER] + ([sleeve_symbol] if extra_sleeve else [])
+    n_legs = len(all_syms)
+    sleeve_leg = (len(all_syms) - 1) if extra_sleeve else TICKERS.index(sleeve_symbol)
+    if extra_sleeve and sleeve_symbol not in px:
+        raise ValueError(f"no price data supplied for sleeve symbol {sleeve_symbol}")
     close = np.column_stack([px[s]["close"].to_numpy(float) for s in all_syms])
     open_ = np.column_stack([px[s]["open"].to_numpy(float) for s in all_syms])
 
@@ -433,14 +456,14 @@ def run_backtest(px: dict[str, pd.DataFrame], vix: pd.Series,
     sleeve_on = False
     cur_hurst = 0.5
 
-    pos = np.zeros(N_ASSETS + 1)      # dollar position per leg (incl. BIL)
+    pos = np.zeros(n_legs)            # dollar position per leg (incl. BIL)
     cash = CAPITAL                    # uninvested dollars
     pending: np.ndarray | None = None  # book to establish at the next open
-    current_target = np.zeros(N_ASSETS + 1)   # book from the last adjustment
+    current_target = np.zeros(n_legs)  # book from the last adjustment
     last_adj_date: str | None = None
 
     equity = np.full(n, np.nan)
-    held_hist = np.zeros((n, N_ASSETS + 1))
+    held_hist = np.zeros((n, n_legs))
     sleeve_hist = np.zeros(n, dtype=bool)
     hurst_hist = np.full(n, np.nan)
     regime_hist = np.full(n, -1, dtype=int)
@@ -535,11 +558,13 @@ def run_backtest(px: dict[str, pd.DataFrame], vix: pd.Series,
 
         # -------- 4. place orders if anything changed --------
         if do_rebal or (flipped and has_prev):
-            held = _effective_book(weight, sleeve_on, sleeve_frac)
+            held = _effective_book(weight, sleeve_on, sleeve_frac,
+                                   n_legs, sleeve_leg)
             pending = held
             current_target = held
             last_adj_date = idx[t].strftime("%Y-%m-%d")
-            tag = "REBAL" if do_rebal else ("to QQQ" if sleeve_on else "to PORT")
+            tag = ("REBAL" if do_rebal
+                   else (f"to {sleeve_symbol}" if sleeve_on else "to PORT"))
             # Only log when the book actually changed at display precision.
             rounded = np.round(held * 100).astype(int)
             if last_printed is None or not np.array_equal(rounded, last_printed):

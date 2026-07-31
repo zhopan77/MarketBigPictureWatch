@@ -31,7 +31,33 @@ from . import settings, strategy as S
 
 log = logging.getLogger(__name__)
 
-CACHE_PATH = settings.DATA_DIR / "strategy.json"
+# One cache per strategy kind. Separate files rather than one big payload so
+# each page load only fetches the variant being viewed.
+# `default_frac` is the fraction each tab OPENS on. It differs by kind: 0.75
+# is the sweet spot for the plain sleeve, but with a 2x sleeve the drawdown
+# grows fast enough past 0.50 that opening any higher would put the most
+# flattering-looking curve in front of you by default.
+KINDS = {
+    "base":     {"file": "strategy.json",
+                 "sleeve": "QQQ",
+                 "title": "All Weather 9",
+                 "default_frac": "0.75"},
+    "leverage": {"file": "strategy_leverage.json",
+                 "sleeve": S.LEVERAGE_SLEEVE,
+                 "title": "All Weather 9 Leverage",
+                 "default_frac": "0.50"},
+}
+
+
+def default_frac(kind: str = "base") -> str:
+    return KINDS.get(kind, KINDS["base"]).get("default_frac", DEFAULT_FRAC)
+
+
+def cache_path(kind: str = "base"):
+    return settings.DATA_DIR / KINDS[kind]["file"]
+
+
+CACHE_PATH = settings.DATA_DIR / "strategy.json"      # base, for compatibility
 LOG_PATH = settings.DATA_DIR / "strategy_adjustments.log"
 
 # How much history to pull.  BIL (the cash leg) only starts 2007-05-30, which
@@ -55,7 +81,10 @@ def fetch_prices(log_fn=log.info) -> dict[str, pd.DataFrame]:
     """
     import yfinance as yf
 
-    syms = S.TICKERS + [S.CASH_TICKER]
+    # QLD is downloaded alongside but deliberately kept OUT of the calendar
+    # intersection below: if it ever started later than BIL it would silently
+    # truncate the plain strategy's history too.
+    syms = S.TICKERS + [S.CASH_TICKER] + [S.LEVERAGE_SLEEVE]
     log_fn(f"Downloading {len(syms)} symbols from Yahoo: {', '.join(syms)}")
     raw = yf.download(syms, start=DOWNLOAD_START, auto_adjust=True,
                       progress=False, group_by="column", threads=True)
@@ -76,14 +105,28 @@ def fetch_prices(log_fn=log.info) -> dict[str, pd.DataFrame]:
         df.index = df.index.normalize()
         frames[s] = df
 
-    # Trade only bars where every instrument printed, mirroring the
-    # "require all assets present" gate in the Zorro/QC versions.
+    # Trade only bars where every CORE instrument printed, mirroring the
+    # "require all assets present" gate in the Zorro/QC versions. The
+    # leveraged sleeve is aligned to that calendar afterwards rather than
+    # being allowed to shorten it.
+    core = S.TICKERS + [S.CASH_TICKER]
     common = None
-    for df in frames.values():
-        common = df.index if common is None else common.intersection(df.index)
+    for s in core:
+        common = frames[s].index if common is None \
+            else common.intersection(frames[s].index)
     common = common.sort_values()
-    for s in syms:
+    for s in core:
         frames[s] = frames[s].loc[common]
+
+    lev = S.LEVERAGE_SLEEVE
+    aligned = frames[lev].reindex(common)
+    missing = int(aligned["close"].isna().sum())
+    if missing:
+        log_fn(f"  {lev}: {missing} of {len(common)} bars missing; the "
+               f"leveraged variant will be skipped")
+        frames.pop(lev, None)
+    else:
+        frames[lev] = aligned
     log_fn(f"  {len(common)} aligned bars "
            f"{common[0].date()} .. {common[-1].date()}")
     return frames
@@ -144,6 +187,12 @@ def compute_stats(equity: np.ndarray) -> dict:
         "sharpe": (r.mean() / sd * math.sqrt(252.0)) if sd > 0 else 0.0,
         "sortino": (r.mean() * math.sqrt(252.0) / sd_down) if sd_down > 0 else 0.0,
         "ulcer": ulcer,
+        # Ulcer Performance Index, a.k.a. the Martin ratio: return per unit of
+        # drawdown pain rather than per unit of volatility. Consistent with the
+        # Sharpe and Sortino above, no risk-free rate is subtracted. CAGR is
+        # scaled to percent because the Ulcer Index is already in percentage
+        # points, and the ratio is only meaningful with matching units.
+        "upi": ((cagr * 100.0) / ulcer) if ulcer > 0 else 0.0,
         "max_drawdown": float(dd.max()),
         "years": years,
     }
@@ -171,15 +220,24 @@ def _frac_key(f: float) -> str:
     return f"{f:.2f}"
 
 
-def build_payload(log_fn=log.info) -> dict:
-    px = fetch_prices(log_fn=log_fn)
-    vix = fetch_vix(log_fn=log_fn)
+def build_payload(log_fn=log.info, kind: str = "base",
+                  px: dict | None = None, vix=None) -> dict:
+    sleeve_symbol = KINDS[kind]["sleeve"]
+    if px is None:
+        px = fetch_prices(log_fn=log_fn)
+    if vix is None:
+        vix = fetch_vix(log_fn=log_fn)
+    if sleeve_symbol not in S.TICKERS and sleeve_symbol not in px:
+        raise RuntimeError(
+            f"No price history for {sleeve_symbol}; cannot build the "
+            f"{kind} strategy.")
 
     # ---- benchmarks and the shared calendar, from the first run ----
     variants, first = {}, None
     for frac in SLEEVE_FRACS:
-        log_fn(f"Backtesting sleeve fraction {frac:.2f} ...")
-        res = S.run_backtest(px, vix, log_fn=log_fn, sleeve_frac=frac)
+        log_fn(f"[{kind}] backtesting sleeve fraction {frac:.2f} ...")
+        res = S.run_backtest(px, vix, log_fn=log_fn, sleeve_frac=frac,
+                             sleeve_symbol=sleeve_symbol)
         if first is None:
             first = res
         variants[_frac_key(frac)] = res
@@ -221,9 +279,10 @@ def build_payload(log_fn=log.info) -> dict:
             "n_adjustments": len(res.adjustments),
         }
         # full adjustment log per fraction, mirroring the Zorro [ADJ ...] lines
-        path = settings.DATA_DIR / f"strategy_adjustments_{key.replace('.', '')}.log"
+        path = (settings.DATA_DIR /
+                f"strategy_adjustments_{kind}_{key.replace('.', '')}.log")
         with path.open("w", encoding="utf-8") as fh:
-            fh.write(f"# AllWeather9 v3.9.2  SLEEVE_FRAC={key}  "
+            fh.write(f"# AllWeather9 v3.9.2  {kind}  SLEEVE_FRAC={key}  "
                      f"generated {datetime.now(timezone.utc).isoformat()}\n")
             for a in res.adjustments:
                 legs = " ".join(f"{k}={v*100:.0f}%" for k, v in a["weights"].items())
@@ -252,8 +311,11 @@ def build_payload(log_fn=log.info) -> dict:
         "bench_stats": {"SPY": compute_stats(spy.to_numpy()),
                         "QQQ": compute_stats(qqq.to_numpy())},
         "fracs": [_frac_key(f) for f in SLEEVE_FRACS],
-        "default_frac": DEFAULT_FRAC,
+        "default_frac": KINDS[kind].get("default_frac", DEFAULT_FRAC),
         "payload_version": PAYLOAD_VERSION,
+        "kind": kind,
+        "title": KINDS[kind]["title"],
+        "sleeve_symbol": sleeve_symbol,
         "variants": var_out,
         "sleeve_on": bool(first.sleeve_on[-1]) if first.sleeve_on is not None else False,
         "hurst": (round(float(first.hurst[-1]), 3)
@@ -268,24 +330,39 @@ def build_payload(log_fn=log.info) -> dict:
             "hurst_enter": S.H_ENTER, "hurst_exit": S.H_EXIT,
             "hurst_win": S.HURST_WIN, "ha_span": S.HA_SPAN_BARS,
             "vix_high": S.VIX_HIGH, "vix_mid": S.VIX_MID,
+            "sleeve_symbol": sleeve_symbol,
         },
     }
     return payload
 
 
 def run_strategy_update(log_fn=log.info) -> dict:
-    payload = build_payload(log_fn=log_fn)
+    """Build every strategy kind. The download and the VIX pull are shared, so
+    the extra cost of the leveraged variant is backtest time only."""
+    px = fetch_prices(log_fn=log_fn)
+    vix = fetch_vix(log_fn=log_fn)
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(json.dumps(payload, separators=(",", ":")),
-                          encoding="utf-8")
-    log_fn(f"  strategy cached -> {CACHE_PATH}")
-    log_fn(f"  {payload['start']}..{payload['as_of']}  "
-           f"{payload['n_rebalances']} rebalances")
-    for key in payload["fracs"]:
-        st = payload["variants"][key]["stats"]
-        log_fn(f"    SLEEVE_FRAC {key}:  CAGR {st['cagr']*100:6.2f}%  "
-               f"Sharpe {st['sharpe']:.3f}  Sortino {st['sortino']:.2f}  "
-               f"MaxDD {st['max_drawdown']*100:6.2f}%")
+
+    payloads = {}
+    for kind in KINDS:
+        sleeve = KINDS[kind]["sleeve"]
+        if sleeve not in S.TICKERS and sleeve not in px:
+            log_fn(f"  skipping '{kind}': no {sleeve} history")
+            continue
+        payload = build_payload(log_fn=log_fn, kind=kind, px=px, vix=vix)
+        cache_path(kind).write_text(json.dumps(payload, separators=(",", ":")),
+                                    encoding="utf-8")
+        payloads[kind] = payload
+        log_fn(f"  {kind} cached -> {cache_path(kind)}  "
+               f"(sleeve = {sleeve})")
+        log_fn(f"  {payload['start']}..{payload['as_of']}  "
+               f"{payload['n_rebalances']} rebalances")
+        for key in payload["fracs"]:
+            st = payload["variants"][key]["stats"]
+            log_fn(f"    SLEEVE_FRAC {key}:  CAGR {st['cagr']*100:6.2f}%  "
+                   f"Sharpe {st['sharpe']:.3f}  Sortino {st['sortino']:.2f}  "
+                   f"MaxDD {st['max_drawdown']*100:6.2f}%")
+    payload = payloads.get("base") or next(iter(payloads.values()))
     bc = payload.get("bil_cagr")
     if bc is not None:
         log_fn(f"  BIL cash carry over the window: {bc*100:.2f}%/yr "
@@ -294,9 +371,10 @@ def run_strategy_update(log_fn=log.info) -> dict:
     return payload
 
 
-def load_cached() -> dict | None:
-    if CACHE_PATH.is_file():
-        return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+def load_cached(kind: str = "base") -> dict | None:
+    path = cache_path(kind)
+    if path.is_file():
+        return json.loads(path.read_text(encoding="utf-8"))
     return None
 
 

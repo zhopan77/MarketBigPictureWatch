@@ -1,4 +1,4 @@
-# Market Big Picture Watch — web app
+# Market Big Picture and Long-term Strategies — web app
 
 Interactive dashboard: FastAPI backend, daily data collection from FRED /
 Yahoo Finance / multpl.com, five macro figure sets rendered client-side with
@@ -80,15 +80,21 @@ daily job and caches its result, so page loads never pay the backtest cost.
 - equity curve of the strategy with SPY and QQQ buy-and-hold overlaid,
   re-based to 0% at the start of whatever period you select
 - a statistics ledger (return, CAGR, volatility, downside volatility, Sharpe,
-  Sortino, Ulcer, max drawdown) for all three, recomputed for that period
+  Sortino, Ulcer, UPI, max drawdown) for all three, recomputed for that period.
+  UPI is the Ulcer Performance Index (the Martin ratio, 马丁比率): CAGR divided
+  by the Ulcer Index, i.e. return per unit of drawdown *pain* rather than per
+  unit of volatility. Like the Sharpe and Sortino here it subtracts no
+  risk-free rate, and CAGR is scaled to percent because the Ulcer Index is
+  already in percentage points
 - begin/end sliders plus 1y / 3y / 5y / 10y / 15y / Max shortcuts, opening
   on the last 5 years. Slicing,
   re-basing and the statistics all happen in the browser, so the controls are
   instant and never hit the server
-- a facts strip at the top right: data through, current Hurst, rebalance
-  count, realised BIL carry, sleeve state, and the **last adjustment** date
-  in bold -- the day the book actually last changed, which is the date the
-  exported allocation belongs to
+- a facts strip at the top right: data through, sleeve state, and the **last
+  adjustment** date in bold -- the day the book actually last changed, which
+  is the date the exported allocation belongs to. Internals that describe HOW
+  the strategy works (the Hurst reading, the rebalance count, the realised
+  cash carry) are deliberately not shown
 - a **QQQ sleeve fraction** dropdown (0.50 / 0.75 / 1.00, defaulting to
   0.75). All three are
   backtested in the daily job and shipped together, so switching is an
@@ -120,6 +126,29 @@ that reads Logical Invest allocation files needs no changes. Omitting `frac`
 exports the default fraction, so older bookmarks keep working; the filename
 carries the fraction (`Allocations_AllWeather_sleeve075_2026-05-07.csv`).
 
+**Figure cache keys.** Cached figures are keyed by slug AND language, since
+the two languages are separate files. Every lookup goes through one `figKey()`
+helper: when the key gained a language component, one call site kept reading by
+bare slug, which silently stopped the theme switch from repainting the macro
+charts until a reload.
+
+**Browser cache.** `style.css` and `strategy.js` are served with a
+cache-busting stamp taken from their mtime, so a new build can never be run
+against a previous release's script. That failure mode is silent and
+confusing: the new markup loads, the old script runs, and the page looks
+healthy while quietly doing the wrong thing — a new tab rendering the old
+tab's data, for example.
+
+**The download cache is pandas-version specific.** `data/MarketBigPictureWatch.pkl`
+holds pickled pandas objects, and those are only readable by a compatible
+pandas — pandas 3 stores date columns at second/microsecond resolution and
+pandas 2 cannot restore a resolution it never produces. Running the app from a
+different environment than the one that wrote the cache (a `.venv` versus
+conda `base`, say) therefore fails inside the unpickler. A sidecar records the
+writing versions so the error names both sides, and `--rebuild-only` falls
+back to a full download rather than stopping: the pickle is only a download
+cache, so re-fetching costs a couple of minutes rather than a diagnosis.
+
 **Cache staleness.** Anything that lives in `data/strategy.json` -- the equity
 series, the allocations, the adjustment log -- only changes when the backtest
 is rerun. Code changes to `build_payload` therefore have no visible effect
@@ -132,6 +161,27 @@ Presentation-only settings (the opening sleeve fraction and period) are
 rendered by the server instead, so those take effect immediately.
 
 **Running it**
+
+The header stamp shows both the last data update and the **next scheduled
+one**, in the same format, each with a full date and the viewer's time zone.
+Both follow the UI language rather than the browser's locale, so Chinese gives
+`2026年7月29日 01:00 CDT` against English's `Jul 29, 2026, 01:00 AM CDT`. The
+parts are composed by hand because asking zh-CN for a zone name wedges it into
+the middle (`2026年7月29日 GMT-5 06:00`), and the zone abbreviation is always
+read through en-US so it stays the familiar CDT rather than GMT-5. The configured hours are
+SERVER-local, so the page is given the server's UTC offset and converts: on a
+single-machine install that reduces to the obvious thing, and from a phone on
+the LAN it still names the correct instant rather than confidently showing the
+right numbers in the wrong zone. It recomputes each minute so an all-day window
+does not go stale, and reads "manual" when the in-process scheduler is off.
+
+The in-process scheduler is optional: if `apscheduler` is not installed the
+site still serves and simply says so, since many installs drive
+`python -m app.update` from cron or Task Scheduler instead. When enabled it
+runs **twice a day, at 06:00 and 19:00 local time**,
+refreshing both the macro figures and the All Weather backtest. Override with
+`MW_UPDATE_HOURS` (comma separated, e.g. `7,13,21`); the older single-hour
+`MW_UPDATE_HOUR` still works and is merged in.
 
 ```bat
 python -m app.update                    REM macro figures + strategy (daily job)
@@ -195,9 +245,54 @@ The seam is already in place — every content route depends on
 No changes to the pipeline, figures, or routes are needed — only `auth.py`
 plus the new pages.
 
+## Language
+
+English and Simplified Chinese, chosen with the radio buttons in the top bar
+**Every page load starts in English.** The choice is deliberately NOT
+persisted: a remembered language is indistinguishable from a wrong default once
+you have forgotten you picked it. `navigator.language` is not sniffed either,
+so a Chinese-locale browser also opens in English. To make it sticky, save
+`LANG` in `applyLanguage()` and read it back in `initLanguage()`. `static/i18n.js` holds both tables; static
+markup carries `data-i18n="key"` and is swapped in place, while strings built
+in JS call `t("key")` and are re-rendered on switch.
+
+The Chinese is a financial register rather than a literal gloss — "sleeve"
+becomes 增强仓 rather than a word-for-word translation, and the ratios use
+their standard names (夏普比率, 索提诺比率, 最大回撤). One typographic detail:
+Latin needs a word space between the two halves of the title and CJK does not,
+so the separator is inserted by CSS rather than baked into the markup.
+
+The macro charts on tabs 01-05 are translated too. Their text is baked into
+the figure JSON, so `app/figures_i18n.py` post-processes the finished figure
+rather than threading a language through every builder: the plotting code
+stays single-language and readable, and adding a locale means adding a
+dictionary. `python -m app.update` therefore writes `{slug}.json` and
+`{slug}.zh.json`, and the API serves whichever the page asks for. If a locale was never built it
+falls back to English and says so in an `X-Figure-Lang` header, which the page
+turns into a visible notice naming the command to run -- a silent fallback is
+indistinguishable from a broken translation.
+
+Date tick labels are a separate problem: plotly renders those itself, so no
+dictionary can reach them. The Chinese build attaches `tickformatstops` to
+every x axis, which swaps the pattern by zoom level -- an 8-year chart wants
+`2026年` where a one-year chart wants `2026年7月` and a one-month view wants
+`2026年7月28日`. The `-` pad modifier drops the leading zero, so it reads 7月
+rather than 07月.
+
+Strings absent from the table pass through unchanged, which keeps tickers and
+index names (CPI, M2, VIX) correct without enumerating them; a `KEEP` set
+marks those as deliberate so `untranslated()` only reports genuine gaps, which
+the build prints. Futures contract names ARE translated (CrudeOil becomes WTI原油) since the
+legend is the only label identifying each of the twenty small panels, and the
+"(no data)" placeholder drawn on a failed panel is translated with it. Note
+these keys are the descriptive names in `data_pipeline.futures_underlying`,
+NOT the Yahoo symbols -- writing them against the symbols produces a table that
+silently matches nothing.
+
 ## Dark mode
 
-A **Dark mode** switch sits in the top bar. The whole stylesheet runs on CSS
+**Dark is the default**; a **Dark mode** switch sits in the top bar and an
+explicit choice of light is remembered. The whole stylesheet runs on CSS
 custom properties, so the theme is a token swap on `<html data-theme="dark">`;
 the preference is stored in `localStorage` and applied by a tiny inline script
 before first paint, so there is no white flash on load. The Einnia mark ships
@@ -228,6 +323,29 @@ statistics swatches (inline `style` attributes) and both plotly surfaces
 change, so all of it is routed through a single `renderThemed()` rather than
 a hand-written list of calls at each site. Text colours that come from CSS
 classes follow the theme on their own.
+
+## Macro figure styling
+
+The builders name their line colours ("blue", "red", ...), which used to
+resolve to the CSS primaries — pure `#0000FF`, `#FFFF00`, `#FF00FF`. That is
+what made the charts look like old gnuplot output, and yellow on white was
+nearly invisible. Those names now resolve through a `PALETTE` table in
+`figures.py`, so one edit restyles every call site while the names stay
+readable where they are used.
+
+The palette is chosen for even perceived weight, separation by hue rather than
+lightness, and enough darkness to stay legible on white — the binding
+constraint, since light mode gets no automatic lifting (worst is 3.14:1, above
+the 3.0 non-text threshold). The Case-Shiller city cycle is ordered for maximum
+hue separation: nine lines share one subplot, and the old order put magenta,
+red and pink together, which become hard to separate once dark mode lifts them.
+
+Also: a solid hairline grid instead of a dotted one (dots go fuzzy when the
+browser scales them), a hairline axis frame instead of the old solid black box,
+and the UI's own font.
+
+**Palette changes are baked into the figure JSON**, so they need
+`python -m app.update --rebuild-only` to appear.
 
 ## Signed figures
 
@@ -263,10 +381,39 @@ baseline and each half is filled separately against an invisible flat trace.
 Filling `tonexty` rather than `tozeroy` is what makes this work on a log axis,
 where zero is minus infinity.
 
+## All Weather Leverage Strategy
+
+A second tab runs the identical strategy with one change: while the sleeve is
+ON it buys **QLD** (ProShares Ultra QQQ, 2x daily) instead of QQQ. Everything
+else — the optimizer, the universe, the VIX regimes, the Hurst/Heikin-Ashi
+gate, the cadence — is untouched, and the base strategy's numbers are
+bit-identical to before the change.
+
+Two deliberate design points:
+
+* **The signal still comes from QQQ.** QLD is 2x QQQ's daily return, so it
+  carries no extra information about trend or persistence — only extra noise
+  and decay. Reading the gate off QQQ keeps the timing identical between the
+  two tabs, which is what makes them comparable.
+* **QQQ keeps its own optimizer weight.** The sleeve becomes a separate QLD
+  leg rather than replacing QQQ, so the optimizer's solution is untouched.
+
+`QLD` is downloaded alongside but deliberately excluded from the calendar
+intersection: if it ever started later than BIL it would silently truncate the
+plain strategy's history too. If its history does not cover the window, the
+leveraged tab is skipped and the plain one is unaffected.
+
+**Account leverage is still 1x** — weights sum to 1.0 and nothing is bought on
+margin. But holding a 2x fund means the BOOK's economic exposure exceeds 100%
+whenever the sleeve is on, and the drawdowns reflect that. Read the MaxDD
+column before drawing conclusions from the CAGR column.
+
 ## A note on the opening view
 
-`DEFAULT_FRAC` and `DEFAULT_YEARS` in `app/strategy_service.py` set what the
-tab opens on. They are rendered into the page by the server on every request,
+`DEFAULT_YEARS` in `app/strategy_service.py` sets the opening period, and each
+entry in `KINDS` carries its own `default_frac`: **0.75** for the plain sleeve,
+**0.50** for the leveraged one, where drawdown grows fast enough past 0.50 that
+opening higher would put the most flattering curve in front of you by default. They are rendered into the page by the server on every request,
 NOT read from the cached JSON -- otherwise changing one would have no effect
 until the next nightly rebuild.
 

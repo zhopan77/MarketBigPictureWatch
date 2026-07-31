@@ -20,19 +20,70 @@ future_yrs_long = 8
 future_yrs_short = 1
 legend_fontsize = 12
 
-GRID = dict(showgrid=True, griddash="dot", gridcolor="rgba(150,150,150,0.55)")
+# A solid hairline grid at low opacity reads cleaner at high DPI than a dotted
+# one, which goes fuzzy once the browser scales it.
+GRID = dict(showgrid=True, griddash="solid",
+            gridcolor="rgba(120,130,145,0.22)", gridwidth=1)
 NOGRID = dict(showgrid=False)
-MPL_C0 = "#1f77b4"          # matplotlib default-cycle blue (GDP line)
-MPL_M = "#bf00bf"           # matplotlib letter-code "m" (muted magenta)
-MPL_C = "#00bfbf"           # matplotlib letter-code "c" (muted cyan)
+AXIS_LINE = "rgba(120,130,145,0.55)"
+FONT_FAMILY = ("Libre Franklin, system-ui, -apple-system, 'Segoe UI', "
+               "Roboto, sans-serif")
+
+# ---------------------------------------------------------------------
+# Palette
+#
+# The builders name their colours ("blue", "red", ...) which historically
+# resolved to the CSS primaries: pure #0000FF, #FFFF00, #FF00FF and so on.
+# Those are what made the charts look like 1990s gnuplot output, and yellow
+# on white was close to invisible. Resolving the same names through this
+# table restyles every call site at once, without touching a single builder.
+#
+# Chosen for even perceived weight (no colour shouts louder than its
+# neighbours), separation in hue rather than just lightness, and enough
+# darkness to stay legible on white.
+# ---------------------------------------------------------------------
+PALETTE = {
+    "blue":      "#3b7dd8",
+    "red":       "#d1495b",
+    "green":     "#2a9d5c",
+    "orange":    "#d06a26",
+    "magenta":   "#a05195",
+    "purple":    "#7c5cbf",
+    "cyan":      "#2ba0a8",
+    "aqua":      "#2ba0a8",
+    "yellow":    "#b38c14",   # dark enough to read on white, unlike #FFFF00
+    "gold":      "#b3820f",
+    "pink":      "#c4658d",
+    "brown":     "#8c6d4f",
+    "black":     "#2b3038",   # soft near-black rather than pure
+    "darkblue":  "#1f4e8c",
+    "darkgreen": "#1c6b45",
+}
+
+
+def _col(c):
+    """Resolve a palette name; pass hex and None straight through."""
+    if isinstance(c, str):
+        return PALETTE.get(c, c)
+    return c
+
+
+MPL_C0 = PALETTE["blue"]     # GDP line
+MPL_M = PALETTE["magenta"]
+MPL_C = PALETTE["cyan"]
 
 cities_of_interest = [
     "National", "Chicago", "SanFrancisco", "LosAngeles", "SanDiego",
     "Portland", "Seattle", "Phoenix", "Dallas",
 ]
+# Case-Shiller city cycle. Ordered for MAXIMUM hue separation rather than
+# following the old sequence: nine lines share one subplot, and the previous
+# order put magenta, red and pink together, which are hard to tell apart once
+# dark mode lifts them toward each other.
 colors = [
-    "black", "green", "blue", "cyan", "magenta", "red",
-    "yellow", "darkblue", "pink", "purple", "orange", "brown",
+    PALETTE["black"], PALETTE["blue"], PALETTE["green"], PALETTE["orange"],
+    PALETTE["magenta"], PALETTE["cyan"], PALETTE["red"], PALETTE["darkblue"],
+    PALETTE["brown"], PALETTE["purple"], PALETTE["gold"], PALETTE["pink"],
 ]
 
 
@@ -62,7 +113,7 @@ def line(df, name, color=None, width=1.5, dash=None, legend=None,
     return go.Scatter(
         x=_dates_to_str(df["date"]), y=df["value"], name=name, mode="lines",
         showlegend=showlegend, legend=legend,
-        line=dict(color=color, width=width, dash=dash),
+        line=dict(color=_col(color), width=width, dash=dash),
     )
 
 
@@ -91,8 +142,8 @@ class LegendManager:
             y=yd[0] + fy * (yd[1] - yd[0]),
             xanchor=xanchor, yanchor=yanchor,
             font=dict(size=legend_fontsize),
-            bgcolor="rgba(255,255,255,0.8)",
-            bordercolor="rgba(150,150,150,0.9)", borderwidth=1,
+            bgcolor="rgba(255,255,255,0.82)",
+            bordercolor="rgba(120,130,145,0.35)", borderwidth=1,
         )})
         return name
 
@@ -103,13 +154,18 @@ def style_figure(fig, xlim=None, height=1000):
         plot_bgcolor="white", paper_bgcolor="white",
         autosize=True, height=height,
         margin=dict(l=60, r=60, t=60, b=40),
-        font=dict(size=14),
+        font=dict(size=14, family=FONT_FAMILY, color="#2b3038"),
     )
-    fig.update_xaxes(**GRID, ticks="outside",
-                     linecolor="black", mirror=True, zeroline=False)
-    fig.update_yaxes(**GRID, ticks="outside",
-                     linecolor="black", mirror=True, zeroline=False,
-                     secondary_y=False)
+    # A hairline frame instead of the old heavy black box: still a crisp
+    # boundary, but it no longer competes with the data inside it.
+    fig.update_xaxes(**GRID, ticks="outside", ticklen=4,
+                     tickcolor=AXIS_LINE,
+                     linecolor=AXIS_LINE, linewidth=1, mirror=True,
+                     zeroline=False)
+    fig.update_yaxes(**GRID, ticks="outside", ticklen=4,
+                     tickcolor=AXIS_LINE,
+                     linecolor=AXIS_LINE, linewidth=1, mirror=True,
+                     zeroline=False, secondary_y=False)
     fig.update_yaxes(**NOGRID, secondary_y=True)
     if xlim is not None:
         fig.update_xaxes(range=[_range_str(v) for v in xlim])
@@ -119,12 +175,12 @@ def build_fig_markets(d, todaystr, xlim):
     fig = make_subplots(
         rows=3, cols=2,
         subplot_titles=(
-            f"Stock and Gold as of {todaystr}",
-            f"S&P500 / Gold as of {todaystr}",
-            f"Inflation Index (10 years ago = 100) as of {todaystr}",
-            f"S&P500 vs. GDP and M2 as of {todaystr}",
-            f"Money Supply and GDP as of {todaystr}",
-            f"Stock Market Valuation - Ratios as of {todaystr}",
+            "Stock and Gold",
+            "S&P500 / Gold",
+            "Inflation Index (10 years ago = 100)",
+            "S&P500 vs. GDP and M2",
+            "Money Supply and GDP",
+            "Stock Market Valuation - Ratios",
         ),
         specs=[[{"secondary_y": True},  {"secondary_y": False}],
                [{"secondary_y": False}, {"secondary_y": True}],
@@ -197,11 +253,11 @@ def build_fig_rates_stress(d, todaystr, xlim):
     fig = make_subplots(
         rows=3, cols=2,
         subplot_titles=(
-            f"Treasury Zero-Coupon Yield as of {todaystr}",
-            f"Stock Market and Interest Rate Structure as of {todaystr}",
-            f"Financial Stress Indicators (1) as of {todaystr}",
-            f"Financial Stress Indicators (2) as of {todaystr}",
-            f"Financial Stress Indicators (3) as of {todaystr}",
+            "Treasury Zero-Coupon Yield",
+            "Stock Market and Interest Rate Structure",
+            "Financial Stress Indicators (1)",
+            "Financial Stress Indicators (2)",
+            "Financial Stress Indicators (3)",
             "",
         ),
         specs=[[{"secondary_y": False}, {"secondary_y": True}],
@@ -234,7 +290,8 @@ def build_fig_rates_stress(d, todaystr, xlim):
     first_date = d["treasury_yield_spread"]["date"].iloc[0]
     last_date = d["treasury_yield_spread"]["date"].iloc[-1]
     fig.add_trace(go.Scatter(x=[first_date, last_date], y=[1, 1], mode="lines",
-                             line=dict(color="red", width=1.5),
+                             line=dict(color=_col("red"), width=1.5,
+                                       dash="dash"),
                              showlegend=False, hoverinfo="skip"),
                   row=1, col=2, secondary_y=True)
 
@@ -272,9 +329,9 @@ def build_fig_economy(d, todaystr, xlim):
     fig = make_subplots(
         rows=2, cols=2,
         subplot_titles=(
-            f"Population as of {todaystr}",
-            f"Labor Market Condition as of {todaystr}",
-            f"S&P/Case-Shiller Home Price Indices as of {todaystr}",
+            "Population",
+            "Labor Market Condition",
+            "S&P/Case-Shiller Home Price Indices",
             "",
         ),
         specs=[[{"secondary_y": True}, {"secondary_y": True}],
@@ -364,11 +421,16 @@ def build_fig_futures(d, todaystr, start_date, xlim_end, suptitle,
         margin=dict(l=50, r=30, t=70, b=30),
         title=dict(text=suptitle, x=0.5, xanchor="center",
                    font=dict(size=16)),
+        font=dict(family=FONT_FAMILY, color="#2b3038"),
     )
-    fig.update_xaxes(**GRID, tickfont=dict(size=9), ticks="outside",
-                     linecolor="black", mirror=True, zeroline=False)
-    fig.update_yaxes(**GRID, tickfont=dict(size=9), ticks="outside",
-                     linecolor="black", mirror=True, zeroline=False)
+    # These panels style their own axes rather than going through
+    # style_figure(), so the modernised frame has to be applied here too.
+    fig.update_xaxes(**GRID, tickfont=dict(size=9), ticks="outside", ticklen=4,
+                     tickcolor=AXIS_LINE, linecolor=AXIS_LINE, linewidth=1,
+                     mirror=True, zeroline=False)
+    fig.update_yaxes(**GRID, tickfont=dict(size=9), ticks="outside", ticklen=4,
+                     tickcolor=AXIS_LINE, linecolor=AXIS_LINE, linewidth=1,
+                     mirror=True, zeroline=False)
     return fig
 
 
@@ -399,10 +461,10 @@ def build_all_figures(all_data: dict) -> dict[str, go.Figure]:
         "economy": build_fig_economy(all_data, todaystr, xlim),
         "futures-long": build_fig_futures(
             all_data, todaystr, start_long, xlim_end,
-            f"Futures - Long Term ({future_yrs_long}-year) as of {todaystr}",
+            f"Futures - Long Term ({future_yrs_long}-year)",
             fixed_xlim=True),
         "futures-short": build_fig_futures(
             all_data, todaystr, start_short, xlim_end,
-            f"Futures - Short Term ({future_yrs_short}-year) as of {todaystr}",
+            f"Futures - Short Term ({future_yrs_short}-year)",
             fixed_xlim=False),
     }
