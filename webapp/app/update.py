@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 
 import plotly.io as pio
 
-from . import data_pipeline, figures, figures_i18n, settings, strategy_service
+from . import (data_pipeline, figures, figures_i18n, fixed_service, settings,
+               strategy_service)
 
 FIG_DIR = settings.DATA_DIR / "figures"
 META_PATH = settings.DATA_DIR / "meta.json"
@@ -50,6 +51,9 @@ def rebuild_figures(all_data, log=print) -> None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "figures": list(figs.keys()),
         "languages": ["en"] + list(figures_i18n.TABLES),
+        # series that could not be downloaded this run; badged in the header
+        # so a partial update is visible rather than silently stale
+        "failures": list(all_data.get("_failures", [])),
     }, indent=2), encoding="utf-8")
 
 
@@ -58,13 +62,23 @@ def run_strategy(log=print) -> bool:
     try/except so a Yahoo hiccup here can never take down the macro figures
     (and vice versa) -- each half of the dashboard fails independently."""
     log("Running All-Weather strategy backtest...")
+    ok = True
     try:
         strategy_service.run_strategy_update(log_fn=log)
-        return True
     except Exception:
         log("Strategy update FAILED (macro figures are unaffected):")
         traceback.print_exc()
-        return False
+        ok = False
+    # The fixed-allocation tab is independent of the dynamic backtest above, so
+    # a failure in either must not take down the other.
+    log("Running All-Weather Fixed (static allocations) backtest...")
+    try:
+        fixed_service.run_fixed_update(log_fn=log)
+    except Exception:
+        log("Fixed-allocation update FAILED (other tabs are unaffected):")
+        traceback.print_exc()
+        ok = False
+    return ok
 
 
 def run_update(rebuild_only: bool = False, log=print,
@@ -93,8 +107,9 @@ def run_update(rebuild_only: bool = False, log=print,
     log("Update complete.")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="MarketWatch daily update")
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="python run.py update",
+                                     description="MarketWatch data update")
     parser.add_argument("--rebuild-only", action="store_true",
                         help="rebuild figures from the existing pickle "
                              "without downloading")
@@ -102,7 +117,7 @@ def main() -> int:
                         help="rerun only the All-Weather backtest")
     parser.add_argument("--skip-strategy", action="store_true",
                         help="refresh the macro figures but not the strategy")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         if args.strategy_only:
             return 0 if run_strategy() else 1

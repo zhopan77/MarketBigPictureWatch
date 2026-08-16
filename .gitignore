@@ -1,3 +1,6 @@
 .history/
 .vscode/
+webapp/.venv
+webapp/data
+webapp/app/__pycache__
 

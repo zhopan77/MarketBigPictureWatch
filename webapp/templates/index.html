@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Market Big Picture Watch</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@500;700;900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@500;700;900&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+Egyptian+Hieroglyphs&display=swap" rel="stylesheet">
 <!-- Tab icon: the swirl mark alone, square and pre-rendered at each size a
      browser asks for. The wordmark is dropped here because it is unreadable
      at 16px and non-square icons get letterboxed or squashed inconsistently. -->
@@ -26,12 +26,17 @@
 </script>
 <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
 <script src="https://cdn.plot.ly/plotly-3.1.0.min.js" charset="utf-8"></script>
+<!-- Plotly's zh-CN locale, vendored from the plotly.js 3.1.0 package rather
+     than pulled from the CDN so it can never drift from the pinned build.
+     It self-registers on load; app code selects it via config.locale. -->
+<script src="/static/plotly-locale-zh-cn.js?v={{ asset_v }}" charset="utf-8"></script>
 </head>
 <body data-default-frac="{{ strategy_defaults.frac }}"
       data-default-years="{{ strategy_defaults.years }}"
       data-payload-version="{{ strategy_payload_version }}"
       data-default-fracs='{{ strategy_default_fracs|tojson }}'
       data-update-hours='{{ update_hours|tojson }}'
+      data-update-minute='{{ update_minute }}'
       data-server-offset="{{ server_utc_offset }}">
 <header class="topbar">
   <div class="brand">
@@ -60,6 +65,11 @@
       <span class="stamp-value" id="updated-at" data-iso="{{ meta.updated_at }}">{{ meta.updated_at[:10] }}</span>
       <span class="stamp-label stamp-next" data-i18n="fact.nextupdate">next update</span>
       <span class="stamp-value stamp-next" id="next-update">&mdash;</span>
+      {% if meta.failures %}
+      <span class="stamp-warn" title="{{ meta.failures|join(', ') }}">
+        <span data-i18n="app.partial">partial data</span>
+        ({{ meta.failures|length }})</span>
+      {% endif %}
     {% else %}
       <span class="stamp-label" data-i18n="app.nodata">no data yet</span>
     {% endif %}
@@ -67,6 +77,12 @@
   </div>
 </header>
 
+{# One bull hieroglyph (Egyptian E001, U+130D2) per unit of leverage on the
+   dynamic strategy tabs: 1 = unlevered, 2 = 2x, 3 = 3x. Rendered with the
+   Noto Sans Egyptian Hieroglyphs webfont (loaded above) so it shows on every
+   platform, and coloured green to match the tab index it sits beside. #}
+{% macro bull() %}<span class="bull-ico">&#78034;</span>{% endmacro %}
+{% set fx_bulls = {'base': 1, 'leverage': 2, 'leverage3x': 3} %}
 <nav class="tabs" role="tablist" aria-label="Figure sets">
   {% for f in figures %}
   <button class="tab" role="tab" data-slug="{{ f.slug }}"
@@ -79,6 +95,8 @@
   <button class="tab" role="tab" data-slug="{{ t.slug }}"
           data-kind="{{ t.kind }}" aria-selected="false">
     <span class="tab-index">{{ '%02d' % (figures|length + loop.index) }}</span>
+    {% set nb = fx_bulls.get(t.kind, 0) %}
+    {% if nb %}<span class="tab-bulls" aria-hidden="true">{% for _ in range(nb) %}{{ bull() }}{% endfor %}</span>{% endif %}
     <span class="tab-title" data-i18n="tab.{{ t.slug }}">{{ t.title }}</span>
   </button>
   {% endfor %}
@@ -97,8 +115,14 @@
       <p id="aw-stale" class="aw-stale" hidden></p>
       <div class="aw-head">
         <div>
-          <h2><span id="aw-title">All Weather 9</span>
-            <span class="ver">v3.9.2</span></h2>
+          <h2><span id="aw-title">All Weather Dynamic</span>
+            <span class="ver">v6.3.1</span></h2>
+          <a class="aw-dl" href="/static/downloads/PortfolioBalancerDesktop.zip"
+             download
+             data-i18n-title="dl.balancer_tip"
+             title="Desktop app that turns a target allocation into broker orders">
+            <span data-i18n="dl.balancer">Portfolio Balancer</span>
+            <span class="aw-dl-meta">.zip</span></a>
         </div>
         <div class="aw-frac-pick">
           <label for="aw-frac"><span id="aw-frac-label">QQQ</span> <span data-i18n="sleeve.fraction">sleeve fraction</span></label>
@@ -107,12 +131,24 @@
             tilted into</span> <span id="aw-frac-hint">QQQ</span>
             <span data-i18n="sleeve.hint_b">while the sleeve is on</span></span>
         </div>
+        <div class="aw-brake-pick">
+          <label class="aw-brake" id="aw-brake-wrap" hidden>
+            <input type="checkbox" id="aw-brake" checked>
+            <span data-i18n="brake.on">vol brake</span>
+          </label>
+          <span class="hint" data-i18n="brake.hint">scales the whole book down
+            when its own realised volatility runs hot</span>
+        </div>
         <dl class="aw-facts">
           <div><dt data-i18n="fact.through">through</dt><dd id="aw-asof">&mdash;</dd></div>
+          <div id="aw-warn" class="stamp-warn" hidden></div>
           <div><dt data-i18n="fact.sleeve">sleeve</dt><dd><span id="aw-sleeve" class="pill">&mdash;</span></dd></div>
           <div><dt data-i18n="fact.lastadj">last adjustment</dt><dd id="aw-lastadj" class="strong">&mdash;</dd></div>
         </dl>
       </div>
+
+      <p class="backtest-note" data-i18n="disclaimer.backtest">For simplicity,
+        backtests do not account for tax, trading cost, or slippage.</p>
 
       <div class="aw-stats-scroll">
         <table class="aw-stats"><tbody id="aw-stats"></tbody></table>
@@ -125,6 +161,10 @@
           {% endfor %}
           <button class="aw-quick" data-years="max" aria-pressed="false" data-i18n="range.max">Max</button>
         </div>
+        <label class="aw-scale" title="" data-i18n-title="dca.tip">
+          <input type="checkbox" id="aw-dca">
+          <span data-i18n="dca.label">fixed monthly investment</span>
+        </label>
         <label class="aw-scale">
           <input type="checkbox" id="aw-log-scale"> <span data-i18n="chart.logscale">log scale</span>
         </label>
@@ -169,6 +209,28 @@
         <div class="aw-monthly-scroll"><table id="aw-monthly"></table></div>
       </section>
 
+      <section class="aw-bands">
+        <h3><span data-i18n="bands.title">Composition</span>
+          <span class="asof" data-i18n="bands.caption">share of the book held in each leg; click a row in the log below to mark that date</span></h3>
+        <div class="aw-controls">
+          <div class="aw-quicks">
+            {% for y in [1, 3, 5, 10, 15] %}
+            <button class="awb-quick" data-years="{{ y }}" aria-pressed="false">{{ y }}y</button>
+            {% endfor %}
+            <button class="awb-quick" data-years="max" aria-pressed="false" data-i18n="range.max">Max</button>
+          </div>
+        </div>
+
+        <div class="aw-range">
+          <label><span class="rl" data-i18n="range.begin">begin</span> <output id="awb-from-label">&mdash;</output>
+            <input type="range" id="awb-from" min="0" max="1" value="0"></label>
+          <label><span class="rl" data-i18n="range.end">end</span> <output id="awb-to-label">&mdash;</output>
+            <input type="range" id="awb-to" min="0" max="1" value="1"></label>
+        </div>
+
+        <div id="aw-bands" class="aw-chart aw-bands-chart"></div>
+      </section>
+
       <details class="aw-logbox">
         <summary><span data-i18n="log.title">Adjustment log</span>
           <span class="extent" id="aw-log-extent"></span></summary>
@@ -176,19 +238,152 @@
       </details>
     </div>
   </section>
+
+  <!-- Classical Fixed panel: static reference allocations (A Golden Butterfly,
+       B Equity-tilted, C 60/40), stacked top to bottom. Each section mirrors
+       the dynamic tab's features (equity curve, stats, monthly heat map,
+       allocation table + CSV) but for a fixed, annually rebalanced book.
+       Rendered from one Jinja loop so the sections stay in sync. -->
+  {% set fx_sections = [
+       {'k': 'A'}, {'k': 'B'}, {'k': 'C'}] %}
+  <section id="fx-root" role="tabpanel" hidden>
+    <div id="fx-message" class="message" hidden></div>
+    <div id="fx-panel" hidden>
+      <p id="fx-stale" class="aw-stale" hidden></p>
+      <div class="fx-intro">
+        <h2 data-i18n="fx.title">Classical Fixed</h2>
+        <span class="ver">v6.3.1</span>
+        <p class="fx-lede" data-i18n="fx.lede">Well-known static allocations you
+          rebalance about once a year &mdash; included for comparison, not as our
+          recommended approach (see the dynamic strategies). Same backtest engine
+          and benchmarks.</p>
+        <p class="backtest-note" data-i18n="disclaimer.backtest">For simplicity,
+          backtests do not account for tax, trading cost, or slippage.</p>
+      </div>
+
+      {% for s in fx_sections %}
+      <section class="fx-section" data-section="{{ s.k }}">
+        <div class="aw-head">
+          <div>
+            <h2><span class="fx-tag">{{ s.k }}</span>
+              <span data-i18n="fx.{{ s.k }}.name">&mdash;</span></h2>
+            <p class="fx-blurb" data-i18n="fx.{{ s.k }}.blurb">&mdash;</p>
+            {% if s.k == 'B' %}
+            <p class="fx-ref"><span data-i18n="fx.B.ref">A well-known
+              &ldquo;lazy&rdquo; portfolio popular with the FIRE crowd, created
+              by Portfolio Charts:</span>
+              <a href="https://portfoliocharts.com/portfolios/golden-butterfly-portfolio/"
+                 target="_blank" rel="noopener"
+                 data-i18n="fx.B.reflink">Golden Butterfly on Portfolio Charts &rarr;</a></p>
+            {% endif %}
+          </div>
+          <dl class="aw-facts">
+            <div><dt data-i18n="fact.through">through</dt>
+              <dd id="fx{{ s.k }}-asof">&mdash;</dd></div>
+            <div><dt data-i18n="fx.since">since</dt>
+              <dd id="fx{{ s.k }}-start">&mdash;</dd></div>
+          </dl>
+        </div>
+
+        <div class="aw-stats-scroll">
+          <table class="aw-stats"><tbody id="fx{{ s.k }}-stats"></tbody></table>
+        </div>
+
+        <div class="aw-controls">
+          <div class="aw-quicks">
+            {% for y in [1, 3, 5, 10, 15] %}
+            <button class="fx-quick" data-section="{{ s.k }}" data-years="{{ y }}"
+                    aria-pressed="false">{{ y }}y</button>
+            {% endfor %}
+            <button class="fx-quick" data-section="{{ s.k }}" data-years="max"
+                    aria-pressed="false" data-i18n="range.max">Max</button>
+          </div>
+          <label class="fx-rebal-pick" title="" data-i18n-title="fx.rebal.tip">
+            <span data-i18n="fx.rebalance">rebalance</span>
+            <select id="fx{{ s.k }}-rebal" class="fx-rebal-select">
+              <option value="none" data-i18n="fx.rebal.none">None</option>
+              <option value="annual" data-i18n="fx.rebal.annual">Annually (Jan 1)</option>
+              <option value="semi" data-i18n="fx.rebal.semi">Semi-annually (Jan, Jul)</option>
+              <option value="quarterly" data-i18n="fx.rebal.quarterly">Quarterly (Jan, Apr, Jul, Oct)</option>
+            </select>
+          </label>
+          <label class="aw-scale">
+            <input type="checkbox" id="fx{{ s.k }}-log">
+            <span data-i18n="chart.logscale">log scale</span>
+          </label>
+        </div>
+
+        <div class="aw-range">
+          <label><span class="rl" data-i18n="range.begin">begin</span>
+            <output id="fx{{ s.k }}-from-label">&mdash;</output>
+            <input type="range" id="fx{{ s.k }}-from" min="0" max="1" value="0"></label>
+          <label><span class="rl" data-i18n="range.end">end</span>
+            <output id="fx{{ s.k }}-to-label">&mdash;</output>
+            <input type="range" id="fx{{ s.k }}-to" min="0" max="1" value="1"></label>
+        </div>
+
+        <div id="fx{{ s.k }}-chart" class="aw-chart"></div>
+
+        <div class="aw-alloc">
+          <div class="aw-alloc-chart">
+            <h3><span data-i18n="alloc.title">Allocation</span>
+              <span class="asof"><span data-i18n="alloc.asof">as of</span>
+                <span id="fx{{ s.k }}-alloc-date">&mdash;</span></span></h3>
+            <div id="fx{{ s.k }}-pie"></div>
+          </div>
+          <div class="aw-alloc-table">
+            <div class="aw-export">
+              <label><span data-i18n="alloc.invest">invest</span> <span class="cur">$</span>
+                <input type="number" id="fx{{ s.k }}-amount" value="100000" min="1" step="1000">
+              </label>
+              <button id="fx{{ s.k }}-export" class="btn"
+                      data-i18n="alloc.export">Export allocation CSV</button>
+            </div>
+            <table class="aw-holdings">
+              <thead><tr><th data-i18n="alloc.symbol">Symbol</th>
+                <th data-i18n="alloc.holding">Holding</th>
+                <th class="r" data-i18n="alloc.weight">Weight</th>
+                <th class="r" data-i18n="alloc.amount">Amount</th>
+                <th class="r" data-i18n="alloc.price">Price</th>
+                <th class="r" data-i18n="alloc.shares">Shares</th></tr></thead>
+              <tbody id="fx{{ s.k }}-alloc-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <section class="aw-monthly">
+          <h3><span data-i18n="monthly.title">Monthly returns</span>
+            <span class="asof" data-i18n="fx.monthly.caption">portfolio, %</span></h3>
+          <div class="aw-monthly-scroll"><table id="fx{{ s.k }}-monthly"></table></div>
+        </section>
+      </section>
+      {% endfor %}
+
+      <p class="fx-foot" data-i18n="fx.foot">Backtested with a long-history
+        small-cap value proxy (IJS); your tradeable choice may differ
+        (AVUV/VBR).</p>
+    </div>
+  </section>
 </main>
 
 <footer class="foot">
   <span data-i18n="foot.sources">Sources: FRED &middot; Yahoo Finance &middot; multpl.com</span>
-  <span data-i18n="foot.disclaimer">Not investment advice.</span>
+  <p class="foot-disclaimer" data-i18n="foot.longdisclaimer">The information
+    provided is for educational and informational purposes only and does not
+    constitute financial or investment advice. Always conduct your own due
+    diligence or consult a professional before making any investment decisions.
+    Past performance is no guarantee of future results. Investments are subject
+    to risk, including possible loss of principal.</p>
 </footer>
 
 <script src="/static/i18n.js?v={{ asset_v }}"></script>
 <script src="/static/strategy.js?v={{ asset_v }}"></script>
+<script src="/static/fixed.js?v={{ asset_v }}"></script>
 <script>
 const plotDiv = document.getElementById("plot");
 const msgDiv = document.getElementById("message");
 const awRoot = document.getElementById("aw-root");
+const fxRoot = document.getElementById("fx-root");
 const tabs = Array.from(document.querySelectorAll(".tab"));
 const cache = new Map();
 
@@ -196,7 +391,11 @@ const cache = new Map();
 // different files. Every lookup must agree on the key -- a stale bare-slug
 // read here is what silently stopped theme switching from repainting them.
 const figKey = slug => slug + "|" + currentLang();
-const STRATEGY_SLUGS = {"all-weather": "base", "all-weather-lev": "leverage"};
+// Derived from the server-rendered tab list rather than hardcoded, so
+// adding a strategy kind in main.py is enough -- a slug missing from
+// this map falls through to the figure loader and 404s.
+const STRATEGY_SLUGS = Object.fromEntries(
+  {{ strategy_tabs|tojson }}.map(t => [t.slug, t.kind]));
 
 function showMessage(html) {
   plotDiv.hidden = true;
@@ -209,14 +408,17 @@ async function showFigure(slug) {
                                    String(t.dataset.slug === slug)));
   history.replaceState(null, "", "#" + slug);
 
-  // The strategy tabs are their own panel, not pre-rendered figures. Both
-  // share one panel; the kind selects which cached payload it shows.
+  // The strategy tabs are their own panels, not pre-rendered figures. The
+  // dynamic kinds share #aw-root; the "fixed" kind has its own #fx-root.
   const kind = STRATEGY_SLUGS[slug];
-  awRoot.hidden = !kind;
+  const isFixed = kind === "fixed";
+  awRoot.hidden = !kind || isFixed;
+  fxRoot.hidden = !isFixed;
   if (kind) {
     plotDiv.hidden = true;
     msgDiv.hidden = true;
-    await loadStrategy(kind);
+    if (isFixed) await loadFixed();
+    else await loadStrategy(kind);
     return;
   }
 
@@ -264,7 +466,9 @@ function repaintForLanguage() {
   const slug = currentSlug();
   paintUpdatedAt();
   paintNextUpdate();
-  if (STRATEGY_SLUGS[slug] && AW.data) {
+  if (STRATEGY_SLUGS[slug] === "fixed") {
+    if (typeof FX !== "undefined" && FX.data) fxRenderAll();
+  } else if (STRATEGY_SLUGS[slug] && AW.data) {
     renderThemed({ withLog: true });
   } else if (slug) {
     // Chart text is baked into the figure JSON, so a language change means
@@ -297,7 +501,9 @@ function setTheme(dark) {
   themeSwitch.checked = dark;
   try { localStorage.setItem("mw-theme", dark ? "dark" : "light"); } catch (e) {}
   const slug = currentSlug();
-  if (STRATEGY_SLUGS[slug]) {
+  if (STRATEGY_SLUGS[slug] === "fixed") {
+    if (typeof FX !== "undefined" && FX.data) fxRenderAll();
+  } else if (STRATEGY_SLUGS[slug]) {
     renderThemed();
   } else {
     const fig = cache.get(figKey(slug));

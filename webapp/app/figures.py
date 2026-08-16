@@ -200,8 +200,13 @@ def build_fig_markets(d, todaystr, xlim):
                        showlegend=False), row=1, col=2)
 
     baseline_yearsago = 10
-    baseline_date = pd.Timestamp(date(date.today().year - baseline_yearsago,
-                                      date.today().month, date.today().day))
+    # Subtracting years by rebuilding the date crashes on 29 February -- there
+    # is no 29 Feb ten years earlier, so date() raises "day is out of range for
+    # month" and the whole figure build fails. Next occurrence: 2028-02-29.
+    # Offsetting the Timestamp instead clamps to the 28th like every other
+    # date library does.
+    baseline_date = pd.Timestamp(date.today()) - pd.DateOffset(
+        years=baseline_yearsago)
     leg_infl = lm.new(2, 1, "upper left")
     infl_series = [
         ("cpi",           "CPI",           "blue",    "dot", 4),
@@ -239,10 +244,13 @@ def build_fig_markets(d, todaystr, xlim):
                        legend=leg_ms2), row=3, col=1, secondary_y=True)
     fig.update_yaxes(title_text="USD Bln", row=3, col=1, secondary_y=False)
 
+    # Both series run high and to the right in the recent data, so top-anchored
+    # legends sat on top of the curves. Anchored low instead: the lower left of
+    # this panel is empty for the whole modern era.
     fig.add_trace(line(d["ShillerPE10"], "Shiller P/E 10", "blue",
-                       legend=lm.new(3, 2, "upper left")), row=3, col=2)
-    fig.add_trace(line(d["TobinQ"], "Tobin's Q", "red",
-                       legend=lm.new(3, 2, "upper right")),
+                       legend=lm.new(3, 2, "lower left")), row=3, col=2)
+    fig.add_trace(line(d["BuffettIndicator"], "Buffett Indicator", "red",
+                       legend=lm.new(3, 2, "lower right")),
                   row=3, col=2, secondary_y=True)
 
     style_figure(fig, xlim=xlim)

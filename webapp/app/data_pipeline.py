@@ -14,13 +14,19 @@ from datetime import date, timedelta
 from io import StringIO
 import pickle
 import sys
+import time
 
 import pandas as pd
 import requests
 import yfinance as yf
-from pandas_datareader import data as pdr
+# NOTE: pandas_datareader is deliberately NOT imported here. It is only
+# needed for the un-keyed FRED fallback, and fred.py imports it lazily
+# inside _via_datareader(). This module used to import it at top level
+# without ever using it, which made an optional dependency load-bearing
+# for starting the server at all -- that is how a distutils failure
+# inside pandas_datareader took down the whole app on Python 3.12.
 
-from . import settings
+from . import fred, settings
 
 macro_yrs_ultralong = 30
 date_fmt = "%Y-%m-%d"
@@ -57,9 +63,40 @@ CaseShillerIndexID = {
 }
 
 
+# A run pulls ~35 FRED series back to back. pandas_datareader retries a few
+# times internally and then raises, which used to abort the entire update on a
+# single slow response -- and FRED throttles bursts, so a long serial run is
+# exactly the case that trips it. Retry with a widening backoff instead.
+FRED_BACKOFF = (5, 20, 60)          # seconds to wait before attempts 2, 3, 4
+
+# Series that could not be downloaded on this run. A single unavailable series
+# should degrade one panel, not abort the whole update, so the helpers record
+# the failure and hand back an empty frame; derived series built with
+# calc_two_dataframes use an inner merge, so they come out empty too rather
+# than raising. The list is surfaced in meta.json and badged in the header.
+DOWNLOAD_FAILURES: list[str] = []
+
+
+def _empty_series() -> pd.DataFrame:
+    return pd.DataFrame({"date": pd.Series(dtype="datetime64[ns]"),
+                         "value": pd.Series(dtype="float64")})
+
+
 def get_daily_data_from_fred(series_name, date_start, date_end, name=None):
-    df = pdr.DataReader(series_name, "fred", date_start, date_end)
-    df = df.reset_index()
+    """One FRED series as a date/value frame.
+
+    Retry and transport now live in app/fred.py, shared with the strategy
+    service. A series that cannot be fetched is recorded and returned EMPTY so
+    one outage degrades a single panel instead of aborting the run.
+    """
+    try:
+        s = fred.fetch_series(series_name, date_start, date_end, log=print)
+    except Exception as exc:
+        print(f"  FRED {series_name}: giving up ({exc}); continuing without it",
+              flush=True)
+        DOWNLOAD_FAILURES.append(f"FRED:{series_name}")
+        return _empty_series()
+    df = s.reset_index()
     df.columns = ["date", "value"]
     df = df.dropna(subset=["value"]).sort_values("date")
     return df
@@ -68,9 +105,18 @@ def get_daily_data_from_fred(series_name, date_start, date_end, name=None):
 def get_daily_data_from_yahoo(symbol, date_start, date_end, name=None):
     start_str = date_start.strftime(date_fmt)
     end_str = (date_end + timedelta(days=1)).strftime(date_fmt)
-    df = yf.download(symbol, start=start_str, end=end_str, progress=False)
+    try:
+        df = yf.download(symbol, start=start_str, end=end_str, progress=False)
+    except Exception as exc:
+        print(f"  Yahoo {symbol}: {type(exc).__name__} ({exc}); "
+              f"continuing without it", flush=True)
+        DOWNLOAD_FAILURES.append(f"Yahoo:{symbol}")
+        return _empty_series()
     if df.empty:
-        raise RuntimeError(f"Yahoo returned no data for {symbol}")
+        print(f"  Yahoo {symbol}: no data returned; continuing without it",
+              flush=True)
+        DOWNLOAD_FAILURES.append(f"Yahoo:{symbol}")
+        return _empty_series()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df = df.reset_index()
@@ -93,6 +139,30 @@ def get_daily_data_from_yahoo(symbol, date_start, date_end, name=None):
             f"Yahoo returned only {len(df)} rows for {symbol} - "
             "treating as a failed download")
     return df
+
+
+def _covers_window(df, date_start, date_end, frac=0.5) -> bool:
+    """Does this frame actually span the window that was asked for?
+
+    `get_daily_data_from_yahoo` already rejects a frame with fewer than 10
+    rows, but that is a row COUNT and the real question is coverage. Yahoo
+    returned three weeks of ^FVX -- about 15 trading days -- for an eight-year
+    request: past the row-count guard, so no exception was raised, so the FRED
+    fallback never fired, and the 5-year-yield chart was a flat line with a
+    spike at the right-hand edge.
+
+    Compares spans rather than requiring an exact start, because a symbol can
+    legitimately begin later than the request (a contract that did not exist
+    yet). frac=0.5 is deliberately loose: it is meant to catch "three weeks
+    instead of eight years", not to police a few missing months.
+    """
+    if df is None or getattr(df, "empty", True) or "date" not in getattr(df, "columns", []):
+        return False
+    want = (date_end - date_start).days
+    if want <= 0:
+        return True
+    got = (df["date"].max() - df["date"].min()).days
+    return got >= frac * want
 
 
 def get_shiller_pe_from_multpl() -> pd.DataFrame:
@@ -126,7 +196,12 @@ def calc_two_dataframes(data1, operator, data2):
 
 
 def collect_all_data(log=print) -> dict:
-    """Download everything from FRED / Yahoo / Multpl.  ~2-5 minutes."""
+    """Download everything from FRED / Yahoo / Multpl.  ~2-5 minutes.
+
+    Individual series are allowed to fail: they come back empty and are listed
+    in DOWNLOAD_FAILURES, which the caller records so the UI can warn.
+    """
+    DOWNLOAD_FAILURES.clear()
     date_plotend = date.today()
     date_plotstart = date_plotend - timedelta(
         days=int(round(macro_yrs_ultralong * 365.25)))
@@ -137,9 +212,9 @@ def collect_all_data(log=print) -> dict:
     gold = get_daily_data_from_yahoo("GC=F", date_plotstart, date_plotend, "Gold")
     SP500_gold = calc_two_dataframes(SP500, "/", gold)
     ShillerPE10 = get_shiller_pe_from_multpl()
+    # Market value of nonfinancial corporate equities (Fed Z.1). Drives the
+    # Buffett Indicator (market cap / GDP), computed once GDP is available below.
     equity = get_daily_data_from_fred("NCBEILQ027S", date_plotstart, date_plotend)
-    networth = get_daily_data_from_fred("TNWMVBSNNCB", date_plotstart, date_plotend)
-    TobinQ = calc_two_dataframes(equity, "/", networth)
     cpi = get_daily_data_from_fred("CPIAUCSL", date_plotstart, date_plotend)
     cpi_food = get_daily_data_from_fred("CPIUFDSL", date_plotstart, date_plotend)
     cpi_housing = get_daily_data_from_fred("CPIHOSSL", date_plotstart, date_plotend)
@@ -159,6 +234,12 @@ def collect_all_data(log=print) -> dict:
     GDP = get_daily_data_from_fred("GDP", date_plotstart, date_plotend)
     RealGDP = get_daily_data_from_fred("GDPC1", date_plotstart, date_plotend)
     SP500_gdp = calc_two_dataframes(SP500, "/", GDP)
+    # Buffett Indicator: corporate equity market value relative to GDP.
+    # NCBEILQ027S is in $millions and GDP in $billions, so the raw ratio is
+    # 1000x the true fraction; x0.1 renders it as the familiar percent
+    # (recent readings land around 150-200%).
+    BuffettIndicator = calc_two_dataframes(equity, "/", GDP)
+    BuffettIndicator["value"] = BuffettIndicator["value"] * 0.1
     GDP_deflated = calc_two_dataframes(GDP, "/", gdpdef)
     GDP_deflated["value"] = GDP_deflated["value"] * 100.0
     SP500_deflgdp = calc_two_dataframes(SP500, "/", GDP_deflated)
@@ -215,8 +296,9 @@ def collect_all_data(log=print) -> dict:
     futures_prices = {}
     for comdty in futures_underlying:
         log(f"Downloading Futures: {comdty}")
+        got = None
         try:
-            futures_prices[comdty] = get_daily_data_from_yahoo(
+            got = get_daily_data_from_yahoo(
                 futures_contracts[comdty], date_plotstart, date_plotend, comdty)
         except Exception as e:
             if comdty in fred_fallback:
@@ -226,11 +308,41 @@ def collect_all_data(log=print) -> dict:
             else:
                 log(f"Warning: Skipping {comdty} - {e}")
                 futures_prices[comdty] = pd.DataFrame(columns=["date", "value"])
+            continue
+
+        # A download that SUCCEEDS but returns a sliver is the failure mode
+        # that actually bit: Yahoo served three weeks of ^FVX for an eight-year
+        # request. Substitute FRED only when FRED is genuinely better, so a
+        # bad FRED day cannot throw away usable Yahoo data.
+        # Checked ONLY for the two series with a FRED equivalent. Those are
+        # Treasury yields, so a full-window history is known to exist and a
+        # short answer is unambiguously wrong. Applying the same rule to the
+        # commodity and currency futures would misfire: a contract can
+        # legitimately start part-way through the window, and there would be
+        # nothing better to switch to anyway.
+        alt = fred_fallback.get(comdty)
+        if alt is not None and not _covers_window(got, date_plotstart,
+                                                  date_plotend):
+            span = ((got["date"].max() - got["date"].min()).days
+                    if not got.empty else 0)
+            if _covers_window(alt, date_plotstart, date_plotend):
+                log(f"Warning: {comdty} from Yahoo covered only {span} days of "
+                    f"{(date_plotend - date_plotstart).days}; using FRED instead")
+                DOWNLOAD_FAILURES.append(f"Yahoo:{futures_contracts[comdty]}(short)")
+                futures_prices[comdty] = alt.copy()
+                continue
+            # FRED is no better today -- keep what we have rather than trade a
+            # short series for an empty one, but do not do it silently
+            log(f"Warning: {comdty} covers only {span} days of "
+                f"{(date_plotend - date_plotstart).days}, and FRED is no "
+                f"better; charting the short series")
+            DOWNLOAD_FAILURES.append(f"Yahoo:{futures_contracts[comdty]}(short)")
+        futures_prices[comdty] = got
 
     all_data = {
         "SP500": SP500, "gold": gold, "SP500_gold": SP500_gold,
-        "ShillerPE10": ShillerPE10, "equity": equity, "networth": networth,
-        "TobinQ": TobinQ, "cpi": cpi, "cpi_food": cpi_food,
+        "ShillerPE10": ShillerPE10, "equity": equity,
+        "BuffettIndicator": BuffettIndicator, "cpi": cpi, "cpi_food": cpi_food,
         "cpi_housing": cpi_housing, "cpi_medical": cpi_medical,
         "cpi_education": cpi_education, "gdpdef": gdpdef,
         "SP500_gdpdef": SP500_gdpdef, "MB": MB, "M2": M2,
@@ -242,6 +354,7 @@ def collect_all_data(log=print) -> dict:
         "GDP": GDP, "RealGDP": RealGDP, "SP500_gdp": SP500_gdp,
         "GDP_deflated": GDP_deflated, "SP500_deflgdp": SP500_deflgdp,
         "MB_GDP": MB_GDP, "M2_GDP": M2_GDP, "tedspread": tedspread,
+        "t3m": t3m,
         "SOFR_t3m": SOFR_t3m, "vix": vix, "stl_fsi": stl_fsi,
         "kc_fsi": kc_fsi, "c_fsi": c_fsi, "anfci": anfci,
         "population": population, "wa_population": wa_population,
@@ -262,6 +375,10 @@ def collect_all_data(log=print) -> dict:
                 if isinstance(df2, pd.DataFrame) and "date" in df2.columns:
                     all_data[key][k2]["date"] = pd.to_datetime(df2["date"])
 
+    if DOWNLOAD_FAILURES:
+        log(f"WARNING: {len(DOWNLOAD_FAILURES)} series unavailable: "
+            + ", ".join(DOWNLOAD_FAILURES))
+    all_data["_failures"] = list(DOWNLOAD_FAILURES)
     return all_data
 
 

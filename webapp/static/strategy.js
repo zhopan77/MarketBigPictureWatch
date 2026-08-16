@@ -13,6 +13,10 @@
 const AW = {
   kind: null,      // "base" | "leverage" -- which cached payload is loaded
   cache: {},       // kind -> payload, so switching tabs is instant
+  markDate: null,  // adjustment date marked on the composition chart
+  volBrake: true,  // false = read the brake-free variant set
+  dca: false,      // true = contribute monthly instead of a lump sum
+  b0: 0, b1: 0,    // composition chart's own window, independent of i0/i1
   data: null,      // the cached payload (all sleeve fractions)
   frac: null,      // selected SLEEVE_FRAC key, e.g. "0.50"
   i0: 0, i1: 0,    // selected [begin, end] indices into data.dates
@@ -22,7 +26,117 @@ const AW = {
 /* The payload holds one precomputed variant per sleeve fraction. Benchmarks
  * and the calendar are shared, so only the strategy series, its statistics,
  * its allocation and its adjustment log change when the dropdown moves. */
-const variant = () => AW.data.variants[AW.frac];
+/* Which precomputed set to read. The vol brake is PATH-DEPENDENT -- it reads
+ * the strategy's own trailing realised vol -- so unlike a sleeve fraction its
+ * alternative cannot be derived in the browser; both are backtested. Falls
+ * back to the braked set when the other is absent (older payload, or the kind
+ * has no brake, in which case the two would be identical anyway). */
+/* The brake changes the BOOK, so its alternative is precomputed rather than
+ * derived here. Falls back to the braked set when the other is absent. */
+const variantSet = () =>
+  (!AW.volBrake && AW.data.variants_nobrake) ? AW.data.variants_nobrake
+                                             : AW.data.variants;
+const variant = () => variantSet()[AW.frac];
+
+/* Rebuild dense per-bar weights from the step encoding the payload ships.
+ * `book` is [[rowIndex, w0..wN] ...] in per-mille, emitted only when the book
+ * CHANGED, so we forward-fill between entries. Cached per (kind, frac) since
+ * the slider re-renders constantly and this is the only O(bars x legs) work
+ * in the panel. */
+const _bookCache = {};
+function bookMatrix() {
+  const key = AW.kind + "|" + AW.frac + "|" + (AW.volBrake ? "b" : "n");
+  if (_bookCache[key]) return _bookCache[key];
+  const steps = variant().book, legs = AW.data.legs || [];
+  const n = AW.data.dates.length;
+  if (!steps || !steps.length || !legs.length) return null;
+  const out = new Array(n);
+  let si = 0, cur = new Array(legs.length).fill(0);
+  for (let i = 0; i < n; i++) {
+    while (si < steps.length && steps[si][0] === i) {
+      cur = steps[si].slice(1).map(v => v / 1000);
+      si++;
+    }
+    out[i] = cur;
+  }
+  _bookCache[key] = { legs, rows: out };
+  return _bookCache[key];
+}
+/* ---------- fixed monthly investment (dollar-cost averaging) -------------
+ * The strategy's RETURNS are unchanged by how the money arrives, so this is a
+ * pure client-side re-simulation of the cash-flow schedule -- no rebuild.
+ *
+ * One unit is contributed on the first bar of each calendar month. The series
+ * returned is VALUE / CONTRIBUTED, so it starts at 1.0 and reads as "profit
+ * per dollar put in". With a single contribution at t0 it reduces exactly to
+ * the existing series/series[0], which is what keeps the unchecked view
+ * identical.
+ *
+ * WHICH METRICS CHANGE
+ *   volatility / Sharpe / Sortino  -- identical, and provably so. The
+ *     account evolves V_t = V_{t-1}*(1+r_t) + c_t, so its return with the
+ *     contribution stripped out is (V_t - c_t)/V_{t-1} - 1 == r_t exactly.
+ *     They describe the strategy, which the funding schedule cannot alter.
+ *   return / CAGR                  -- money-weighted (see moneyWeightedCAGR).
+ *   MaxDD / Ulcer / UPI            -- recomputed on the ACCOUNT BALANCE, which
+ *     really is a different path: fresh contributions cushion a fall, so the
+ *     balance drops less in percentage terms than the strategy does.
+ */
+function contributionBars(dates) {
+  const out = [0];
+  for (let i = 1; i < dates.length; i++) {
+    if (dates[i].slice(0, 7) !== dates[i - 1].slice(0, 7)) out.push(i);
+  }
+  return out;
+}
+
+/* Account balance under the contribution schedule: what the brokerage
+ * statement would show. Distinct from dcaPath(), which normalises by the
+ * amount contributed. */
+function dcaAccount(raw, dates) {
+  const bars = new Set(contributionBars(dates));
+  const out = new Array(raw.length);
+  let value = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (i > 0) value *= raw[i] / raw[i - 1];
+    if (bars.has(i)) value += 1;
+    out[i] = value;
+  }
+  return out;
+}
+
+function dcaPath(raw, dates) {
+  const bars = new Set(contributionBars(dates));
+  const out = new Array(raw.length);
+  let value = 0, contributed = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (i > 0) value *= raw[i] / raw[i - 1];      // market move
+    if (bars.has(i)) { value += 1; contributed += 1; }
+    out[i] = value / contributed;
+  }
+  return out;
+}
+
+/* Money-weighted (internal) rate of return: the annual rate at which the
+ * contributions would have to compound to reach the final value. Bisection --
+ * the future value is strictly increasing in the rate, so it cannot fail. */
+function moneyWeightedCAGR(raw, dates) {
+  const bars = contributionBars(dates);
+  const n = raw.length;
+  let value = 0;
+  for (const i of bars) value += raw[n - 1] / raw[i];   // FV of each unit
+  const fv = value, k = bars.length;
+  const ages = bars.map(i => (n - 1 - i) / 252);
+  let lo = -0.95, hi = 5.0;
+  for (let it = 0; it < 200; it++) {
+    const mid = (lo + hi) / 2;
+    let acc = 0;
+    for (const a of ages) acc += Math.pow(1 + mid, a);
+    if (acc < fv) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
 const seriesFor = key =>
   key === "strategy" ? variant().series : AW.data.benchmarks[key];
 
@@ -35,10 +149,120 @@ const SERIES = [
     light: "#4d6fa8", dark: "#7fa8e6", width: 1.4, fill: false },
 ];
 
+// 11 entries: one per possible leg (9 ETFs + BIL + QLD). The 11th hue was
+// added when the composition bands arrived -- the palette used to be 10.
 const PIE_LIGHT = ["#0e6e4f", "#c2903a", "#4d6fa8", "#8c5a7a", "#6a8f3c",
-                   "#b0603a", "#4f8f8a", "#7a6aa8", "#93794a", "#5b6472"];
+                   "#b0603a", "#4f8f8a", "#7a6aa8", "#93794a", "#5b6472",
+                   "#a34248", "#5a7d5a"];
 const PIE_DARK  = ["#3fbf8f", "#e0b158", "#7fa8e6", "#c88bae", "#9ec95a",
-                   "#e08a63", "#66c2bb", "#a99ae0", "#c4a86a", "#9aa3b0"];
+                   "#e08a63", "#66c2bb", "#a99ae0", "#c4a86a", "#9aa3b0",
+                   "#e8848c", "#8fbf8f"];
+
+/* Canonical leg order: ALPHABETICAL, so a symbol always gets the same colour
+ * no matter which kind is loaded or how the allocation happens to be sorted.
+ * The pie and the composition bands both index this, which is what keeps
+ * them in agreement. Bands are drawn with BIL at the top, XLE at the bottom
+ * (see stackOrder below). */
+const LEG_ORDER = ["BIL", "EEM", "EFA", "GLD", "IEF", "IWM",
+                   "QLD", "QQQ", "SPY", "TLT", "TQQQ", "VBR", "XLE"];
+
+/* The sleeve is the point of the strategy, so it gets a highlighter colour
+ * rather than a palette slot -- bright lime, which stays legible on both the
+ * white and the near-black card. Whichever symbol the sleeve buys (QQQ, QLD or
+ * TQQQ) picks this up, in the bands and in the pie alike. */
+const SLEEVE_HILITE = () => (isDark() ? "#ccff33" : "#7cb800");
+/* Chinese date ticks.
+ *
+ * Plotly composes its automatic date ticks as month + year, and the zh-CN
+ * locale's shortMonths are single characters, so a month-scale tick renders
+ * "\u4e5d 2025". These stops override that to 2025\u5e749\u6708.
+ *
+ * %-m / %-d use d3-time-format's no-pad modifier (verified: "%Y\u5e74%-m\u6708"
+ * formats 2025-09-15 as "2025\u5e749\u6708"). dtickrange is in ms.
+ * Returning undefined for English leaves Plotly's own defaults alone. */
+const DAY_MS = 86400000;
+const ZH_DATE_STOPS = [
+  { dtickrange: [null, 7 * DAY_MS], value: "%Y\u5e74%-m\u6708%-d\u65e5" },
+  { dtickrange: [7 * DAY_MS, 30 * DAY_MS], value: "%-m\u6708%-d\u65e5" },
+  { dtickrange: [30 * DAY_MS, 365 * DAY_MS], value: "%Y\u5e74%-m\u6708" },
+  { dtickrange: [365 * DAY_MS, null], value: "%Y\u5e74" },
+];
+/* Context bands: NBER recessions and >=20% SPY drawdowns, drawn BENEATH every
+ * trace (layer:"below") so they never obscure a curve.
+ *
+ * The two sets overlap -- the 2001 recession sits inside the dot-com bear --
+ * and stacking two translucent rects would double the tint there. So the
+ * spans are merged into a non-overlapping union first, giving one uniform
+ * grey wash. */
+function contextBands(lo, hi) {
+  const sh = AW.data && AW.data.shades;
+  if (!sh) return { shapes: [], annotations: [] };
+  const spans = []
+    .concat(sh.recession || [], sh.drawdown || [], sh.event || [])
+    .filter(e => e.from && e.to)
+    .map(e => [e.from, e.to, e.label || ""])
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1));
+
+  // Merge overlapping spans, unioning their labels. The GFC appears twice --
+  // once as an NBER recession, once as a >=20% drawdown -- and two translucent
+  // rects would double the tint, so they become one band with one label.
+  const merged = [];
+  spans.forEach(([a, b, name]) => {
+    const last = merged[merged.length - 1];
+    if (last && a <= last[1]) {
+      if (b > last[1]) last[1] = b;
+      if (name) last[2].add(name);
+    } else merged.push([a, b, new Set(name ? [name] : [])]);
+  });
+
+  // Shapes with xref:"x" take part in the axis autorange, so a band outside
+  // the selected period would drag the chart back to cover it: drop those and
+  // clamp partial overlaps to the window edges.
+  // light mode needed more contrast: 0.055 on a white card was invisible
+  const grey = isDark() ? "rgba(255,255,255,0.07)" : "rgba(17,17,17,0.13)";
+  const shapes = [], annotations = [];
+  merged
+    .filter(([a, b]) => !(b < lo || a > hi))
+    .forEach(([a, b, names]) => {
+      const x0 = a < lo ? lo : a, x1 = b > hi ? hi : b;
+      shapes.push({
+        type: "rect", xref: "x", yref: "paper",
+        x0, x1, y0: 0, y1: 1,
+        fillcolor: grey, line: { width: 0 }, layer: "below",
+      });
+      const raw = [...names].join(" / ");
+      if (!raw) return;
+      // known crises get a translation; anything else (e.g. "2022 bear")
+      // falls through to the server's own wording
+      // "2022 bear" is generated server-side for unnamed episodes, so it is
+      // composed rather than looked up -- a future "2031 bear" then works
+      // with no new key.
+      const bear = /^(\d{4}) bear$/.exec(raw);
+      const key = "crisis." + raw;
+      const text = bear ? bear[1] + t("crisis.bear")
+                        : (t(key) === key ? raw : t(key));
+      const mid = new Date((Date.parse(x0) + Date.parse(x1)) / 2)
+        .toISOString().slice(0, 10);
+      annotations.push({
+        x: mid, y: 0.99, xref: "x", yref: "paper", text,
+        showarrow: false, yanchor: "top",
+        font: { size: 10, color: cssVar("--slate") },
+      });
+    });
+  return { shapes, annotations };
+}
+
+const dateTickStops = () => currentLang() === "zh" ? ZH_DATE_STOPS : undefined;
+
+const legColor = sym => {
+  if (AW.data && sym === AW.data.sleeve_symbol) return SLEEVE_HILITE();
+  const i = LEG_ORDER.indexOf(sym);
+  const pal = pieColors();
+  // unknown symbols fall back to a stable slot rather than a grey blob, so a
+  // leg added server-side still gets a distinct colour
+  const j = i >= 0 ? i : [...sym].reduce((a, c) => a + c.charCodeAt(0), 0);
+  return pal[j % pal.length];
+};
 
 /* ---------- theme ----------
  * Chart colours are read from the CSS custom properties at draw time, so the
@@ -46,8 +270,17 @@ const PIE_DARK  = ["#3fbf8f", "#e0b158", "#7fa8e6", "#c88bae", "#9ec95a",
  * truth: change a token in style.css and the plots move with it. */
 // The strategy series is named for the tab it belongs to, so tab 07's legend
 // reads "All Weather Leverage Strategy" rather than borrowing tab 06's name.
-const seriesLabel = s => (s.key === "strategy" && AW.kind === "leverage")
-  ? t("series.strategy_lev") : t(s.i18n);
+/* The strategy row is named per KIND. An earlier startsWith("leverage") test
+ * matched leverage3x too, so the 3x tab reused the 2x label. Explicit map,
+ * falling back to the series' own key for anything unlisted. */
+const STRATEGY_LABEL = {
+  base: "series.strategy",
+  leverage: "series.strategy_lev",
+  leverage3x: "series.strategy_lev3",
+};
+const seriesLabel = s =>
+  (s.key === "strategy" && STRATEGY_LABEL[AW.kind])
+    ? t(STRATEGY_LABEL[AW.kind]) : t(s.i18n);
 
 const isDark = () => document.documentElement.dataset.theme === "dark";
 const cssVar = n =>
@@ -242,7 +475,12 @@ function plotInto(id, traces, layout) {
     el.innerHTML = '<p class="plot-missing">' + esc(t("msg.noplotly")) + '</p>';
     return;
   }
-  Plotly.react(el, traces, layout, { responsive: true, displaylogo: false });
+  // Locale is read at draw time, so switching language and re-rendering is
+  // enough to relabel every axis -- no separate tick-format handling.
+  Plotly.react(el, traces, layout, {
+    responsive: true, displaylogo: false,
+    locale: currentLang() === "zh" ? "zh-CN" : "en",
+  });
 }
 
 /* ---------- monthly + yearly returns ------------------------------------
@@ -336,10 +574,46 @@ function renderMonthly() {
 }
 
 /* ---------- rendering ---------------------------------------------------- */
+/* Payload-level warnings, e.g. the rate-tied Sortino term switched off because
+ * DGS10 could not be downloaded. Without this the strategy silently changes
+ * behaviour and the only trace is a line in the update log. */
+function renderWarnings() {
+  const el = document.getElementById("aw-warn");
+  if (!el) return;
+  const w = (AW.data && AW.data.warnings) || [];
+  el.hidden = w.length === 0;
+  el.textContent = w.join("; ");
+  el.title = w.join("\n");
+}
+
 function renderStats() {
+  const dts = AW.data.dates.slice(AW.i0, AW.i1 + 1);
   const rows = SERIES.map(s => {
     const slice = seriesFor(s.key).slice(AW.i0, AW.i1 + 1);
-    return { s, st: stats(slice) };
+    const st = stats(slice);
+    if (st && AW.dca) {
+      // Return figures -> money-weighted. Drawdown figures -> recomputed on
+      // the account balance. Volatility, Sharpe and Sortino are left alone
+      // because they are mathematically unchanged, not because they are hard
+      // to compute (see the note above dcaAccount).
+      const path = dcaPath(slice, dts);
+      st.total = path[path.length - 1] - 1;
+      st.cagr = moneyWeightedCAGR(slice, dts);
+      const acct = dcaAccount(slice, dts);
+      let peak = 0, maxDD = 0, ddSq = 0, cnt = 0;
+      for (const v of acct) {
+        if (v <= 0) continue;               // before the first contribution
+        if (v > peak) peak = v;
+        const dd = (peak - v) / peak;
+        if (dd > maxDD) maxDD = dd;
+        ddSq += (100 * dd) * (100 * dd);
+        cnt++;
+      }
+      st.maxDD = maxDD;
+      st.ulcer = cnt ? Math.sqrt(ddSq / cnt) : 0;
+      st.upi = st.ulcer > 0 ? (st.cagr * 100) / st.ulcer : 0;
+    }
+    return { s, st };
   }).filter(x => x.st);
 
   const head = `<tr><th class="lbl">${t("stats.name")}</th>
@@ -372,7 +646,8 @@ function renderChart() {
   const baseline = log ? 100 : 0;
 
   const lines = SERIES.map(s => {
-    const raw = seriesFor(s.key).slice(AW.i0, AW.i1 + 1);
+    let raw = seriesFor(s.key).slice(AW.i0, AW.i1 + 1);
+    if (AW.dca) raw = dcaPath(raw, x);     // value per dollar contributed
     const b0 = raw[0];
     return { s, y: raw.map(v => (log ? 100 * v / b0 : (v / b0 - 1) * 100)) };
   });
@@ -384,6 +659,16 @@ function renderChart() {
   // axis zero is minus infinity, so both halves fill `tonexty` against an
   // invisible flat trace pinned at the baseline. That works identically on
   // linear and log, which is why the log view keeps its shading.
+  // Shade the strategy's area against the neutral line: green where it is
+  // ahead, red where it is behind. Plotly has no two-tone fill, so this is
+  // the standard split -- clamp the series above and below the baseline and
+  // fill each half separately. `tozeroy` is not usable here because on a log
+  // axis zero is minus infinity, so both halves fill `tonexty` against an
+  // invisible flat trace pinned at the baseline. That works identically on
+  // linear and log, which is why the log view keeps its shading.
+  //
+  // Per-leg composition moved to its own chart (drawBands) in v5.0: overlaying
+  // ten bands on top of three lines here was unreadable.
   const area = [];
   const strat = lines.find(l => l.s.fill);
   if (strat) {
@@ -408,6 +693,7 @@ function renderChart() {
                    "<extra>" + seriesLabel(s) + "</extra>",
   })));
 
+  const bands = contextBands(x[0], x[x.length - 1]);
   const ink = cssVar("--ink"), grid = cssVar("--grid"),
         axis = cssVar("--axis"), card = cssVar("--card");
   const layout = {
@@ -416,12 +702,27 @@ function renderChart() {
     margin: { l: 64, r: 20, t: 18, b: 40 },
     paper_bgcolor: card, plot_bgcolor: card,
     hovermode: "x unified",
+    shapes: bands.shapes, annotations: bands.annotations,
+    // Explicit on BOTH charts so they match in either theme. Left to its
+    // defaults, "x" mode paints the label from the TRACE colour
+    // (color0 = d.bgcolor || dColor in fx/hover.js), which tinted the
+    // composition tooltip green, while "x unified" composites from the plot
+    // background and came out card-coloured.
+    hoverlabel: { bgcolor: card, bordercolor: cssVar("--hairline"),
+                  font: { color: ink, size: 13,
+                          family: "Libre Franklin, system-ui, sans-serif" } },
     font: { size: 14, color: ink, family: "Libre Franklin, system-ui, sans-serif" },
     legend: { orientation: "h", x: 0, y: 1.08,
               font: { size: 13, color: ink }, bgcolor: card },
     xaxis: { showgrid: true, griddash: "dot", gridcolor: grid,
              linecolor: axis, mirror: true, ticks: "outside",
-             automargin: true, tickfont: { color: ink } },
+             automargin: true, tickfont: { color: ink },
+             tickformatstops: dateTickStops(),
+             // ISO in the hover box. Plotly would otherwise render the axis
+             // default ("Nov 2023"), which is both coarser than the data and
+             // untranslated -- its month names need a separate locale bundle,
+             // so an ISO date sidesteps localisation altogether.
+             hoverformat: "%Y-%m-%d" },
     yaxis: { title: { text: log ? t("chart.growth") : t("chart.cumret"),
                       standoff: 12 },
              automargin: true,
@@ -433,6 +734,205 @@ function renderChart() {
              type: log ? "log" : "linear" },
   };
   plotInto("aw-chart", traces, layout);
+}
+
+/* ---------- composition bands -------------------------------------------
+ * A dedicated chart: the strategy's own curve with the area beneath it split
+ * into one band per leg, sized by that leg's weight at each bar.
+ *
+ * Stacking runs from the CURVE DOWNWARD in alphabetical order, so trace
+ * insertion order is alphabetical too -- the legend comes out alphabetical
+ * without depending on `legendrank`, and the bands read A..Z top to bottom.
+ * (Stacking upward from the baseline would need reverse order and leave the
+ * legend reversed.)
+ *
+ * No benchmark lines: this chart answers "what was held", and SPY/QQQ would
+ * re-introduce exactly the clutter it exists to remove.
+ */
+/* Faint vertical rules marking every logged adjustment: rebalances and sleeve
+ * flips. Drawn with layer:"above" -- unlike the recession bands, which sit
+ * below the traces -- because the composition bands are SOLID fills and would
+ * otherwise hide them completely.
+ *
+ * Density guard: the full window holds ~800 adjustments, which at 15y is a
+ * line every few days and reads as a solid wash rather than as marks. Past
+ * REBAL_MAX in view, only the sleeve flips are drawn: they are far rarer
+ * (~135) and are the ones worth seeing at that zoom. The threshold is set so
+ * the 1y/3y/5y presets still show every adjustment.
+ */
+const REBAL_MAX = 300;   // 1y/3y/5y show every adjustment; 10y+ thins to flips
+function adjustmentShapes(lo, hi) {
+  const v = variant();
+  const adj = (v && v.adjustments) || [];
+  const win = adj.filter(a => a.date >= lo && a.date <= hi);
+  const flipsOnly = win.length > REBAL_MAX;
+  const dark = isDark();
+  // Rebalances are frequent, so they stay neutral grey and recede; sleeve
+  // flips are rare and consequential, so they keep the pink. Solid rather
+  // than dotted -- at this density dotted lines shimmer.
+  //
+  // Both kinds are now grey; flips are told apart by being DARKER and THICKER
+  // rather than by hue. Pink read as an alarm colour and dominated the
+  // composition it was meant to annotate.
+  const nFlip = win.filter(a => a.tag !== "REBAL").length;
+  const fade = Math.max(0.45, Math.min(1, 1 - (nFlip - 25) / 140));
+  const cReb = dark ? "rgba(160,168,176,0.32)" : "rgba(55,62,70,0.42)";
+  const cFlip = dark ? `rgba(224,230,238,${(0.62 * fade).toFixed(2)})`
+                     : `rgba(18,24,32,${(0.66 * fade).toFixed(2)})`;
+  const out = [];
+  win.forEach(a => {
+    const flip = a.tag !== "REBAL";      // "to <sleeve>" / "to PORT"
+    if (flipsOnly && !flip) return;
+    out.push({
+      type: "line", xref: "x", yref: "paper",
+      x0: a.date, x1: a.date, y0: 0, y1: 1, layer: "above",
+      line: { color: flip ? cFlip : cReb,
+              width: flip ? (fade > 0.7 ? 1.6 : 1.3) : 0.8 },
+    });
+  });
+  return out;
+}
+
+function renderBands() {
+  const el = document.getElementById("aw-bands");
+  if (!el) return;
+  const d = AW.data, book = bookMatrix();
+  if (!book) { el.innerHTML = ""; return; }
+
+  const x = d.dates.slice(AW.b0, AW.b1 + 1);
+  const log = AW.logScale;
+  const baseline = log ? 100 : 0;
+  const rawEq = variant().series.slice(AW.b0, AW.b1 + 1);
+  const b0 = rawEq[0];
+  const curve = rawEq.map(v => (log ? 100 * v / b0 : (v / b0 - 1) * 100));
+
+  const rows = book.rows.slice(AW.b0, AW.b1 + 1);
+  const col = {};
+  book.legs.forEach((sy, j) => { col[sy] = j; });
+  // Sorted from the payload's legs rather than filtered through LEG_ORDER --
+  // filtering dropped any leg missing from that list (TQQQ did not vanish from
+  // the book, it vanished from the chart).
+  const order = [...book.legs].sort();
+  const total = rows.map(r => order.reduce(
+    (a, sy) => a + Math.max(0, r[col[sy]] || 0), 0));
+  const seen = {};
+  rows.forEach(r => order.forEach(sy => {
+    if ((r[col[sy]] || 0) > 0.0005) seen[sy] = true;
+  }));
+
+  // line_shape "hv" holds each value until the next point instead of
+  // interpolating to it. The book only changes on adjustment bars, so a
+  // straight line between them implies a gradual reallocation that never
+  // happened -- and it reads worst across weekends, where one segment spans
+  // three calendar days on a date axis (a Friday->Monday flip looked like it
+  // began on the Friday).
+  const hidden = {
+    x, type: "scatter", mode: "lines", line: { width: 0, shape: "hv" },
+    hoverinfo: "skip", showlegend: false,
+  };
+  const traces = [{ ...hidden, y: curve }];
+  const cum = new Array(rows.length).fill(0);
+  order.forEach(sy => {
+    const j = col[sy];
+    const y = rows.map((r, i) => {
+      cum[i] += Math.max(0, r[j] || 0);
+      const f = total[i] > 0 ? cum[i] / total[i] : 0;
+      return baseline + (curve[i] - baseline) * (1 - f);
+    });
+    traces.push({
+      ...hidden, y, name: sy, fill: "tonexty",
+      // Solid, identical to the pie slice for the same symbol. Bands are
+      // separated by a hairline in the card colour rather than by opacity,
+      // which is exactly how the pie separates its slices.
+      fillcolor: legColor(sy),
+      line: { width: 0.8, color: cssVar("--card"), shape: "hv" },
+      showlegend: !!seen[sy],
+    });
+  });
+
+  // One tooltip listing the whole book at that bar. A single invisible trace
+  // keeps the hover to ONE box; per-band hovertemplates under "x unified"
+  // would stack ten rows and be unreadable.
+  // Plotly's SVG text renderer supports <span style="..."> (TAG_STYLES/
+  // STYLEMATCH in svg_text_utils), so each row can carry a filled square in
+  // the leg's own colour -- the same read as the equity chart's unified hover,
+  // but kept to ONE box instead of ten stacked rows.
+  const label = rows.map((r, i) => order
+    .filter(sy => (r[col[sy]] || 0) > 0.0005)
+    .map(sy => '<span style="color:' + legColor(sy) + '">\u25a0</span> ' +
+               sy + " " + (100 * r[col[sy]] / (total[i] || 1)).toFixed(1) + "%")
+    .join("<br>") || "cash only");
+  traces.push({
+    x, y: curve, type: "scatter", mode: "lines", showlegend: false,
+    line: { color: isDark() ? "#3fbf8f" : "#0e6e4f", width: 2, shape: "hv" },
+    // customdata rather than %{x}: Plotly formats a parsed date axis to
+    // whatever the zoom suggests ("Jan 2026"), and we want the same full
+    // YYYY-MM-DD the marker annotation shows.
+    text: label, customdata: x,
+    hovertemplate: "<b>%{customdata}</b><br>%{text}<extra></extra>",
+  });
+
+  const bands = contextBands(x[0], x[x.length - 1]);
+  const ink = cssVar("--ink"), grid = cssVar("--grid"),
+        axis = cssVar("--axis"), card = cssVar("--card");
+  const layout = {
+    template: "plotly_white", autosize: true, height: 360,
+    margin: { l: 64, r: 20, t: 18, b: 40 },
+    paper_bgcolor: card, plot_bgcolor: card,
+    hovermode: "x",
+    // Explicit on BOTH charts so they match in either theme. Left to its
+    // defaults, "x" mode paints the label from the TRACE colour
+    // (color0 = d.bgcolor || dColor in fx/hover.js), which tinted the
+    // composition tooltip green, while "x unified" composites from the plot
+    // background and came out card-coloured.
+    hoverlabel: { bgcolor: card, bordercolor: cssVar("--hairline"),
+                  font: { color: ink, size: 13,
+                          family: "Libre Franklin, system-ui, sans-serif" } },
+    font: { size: 13, color: ink,
+            family: "Libre Franklin, system-ui, sans-serif" },
+    legend: { orientation: "h", x: 0, y: 1.10,
+              font: { size: 12, color: ink }, bgcolor: card,
+              // Plotly defaults traceorder to "reversed" when a chart
+              // holds filled area traces, which displayed the
+              // alphabetical stack backwards (XLE..BIL). Pin it.
+              traceorder: "normal" },
+    xaxis: { showgrid: false,   // the adjustment rules are the vertical reference here;
+             // a calendar grid on top of them is just noise
+             griddash: "dot", gridcolor: grid,
+             linecolor: axis, mirror: true, ticks: "outside",
+             automargin: true, tickfont: { color: ink },
+             tickformatstops: dateTickStops(),
+             // ISO in the hover box. Plotly would otherwise render the axis
+             // default ("Nov 2023"), which is both coarser than the data and
+             // untranslated -- its month names need a separate locale bundle,
+             // so an ISO date sidesteps localisation altogether.
+             hoverformat: "%Y-%m-%d" },
+    yaxis: { showgrid: true, griddash: "dot", gridcolor: grid,
+             linecolor: axis, mirror: true, ticks: "outside",
+             automargin: true, tickfont: { color: ink },
+             type: log ? "log" : "linear", ticksuffix: log ? "" : "%" },
+    // context bands first (they sit below the traces), then the adjustment
+    // rules on top of the solid fills
+    shapes: bands.shapes.concat(adjustmentShapes(x[0], x[x.length - 1])),
+    annotations: bands.annotations.slice(),
+  };
+
+  // Marker for a clicked adjustment row. Only drawn when that date is inside
+  // the visible window; otherwise it would pin to the axis edge and read as
+  // a bug rather than as "outside the range you are looking at".
+  if (AW.markDate && x.indexOf(AW.markDate) >= 0) {
+    layout.shapes.push({
+      type: "line", xref: "x", yref: "paper",
+      x0: AW.markDate, x1: AW.markDate, y0: 0, y1: 1,
+      line: { color: ink, width: 1.5, dash: "dot" },
+    });
+    layout.annotations.push({
+      x: AW.markDate, y: 1, xref: "x", yref: "paper", text: AW.markDate,
+      showarrow: false, yanchor: "bottom", font: { size: 11, color: ink },
+      bgcolor: card,
+    });
+  }
+  plotInto("aw-bands", traces, layout);
 }
 
 function renderAllocation() {
@@ -454,7 +954,7 @@ function renderAllocation() {
     type: "pie", hole: 0.55, sort: false,
     labels: alloc.map(a => a.symbol),
     values: alloc.map(a => a.weight),
-    marker: { colors: pieColors(),
+    marker: { colors: alloc.map(a => legColor(a.symbol)),
               line: { color: cssVar("--card"), width: 1.5 } },
     textinfo: "label+percent", textposition: "outside",
     // automargin lets plotly reserve whatever room the outside labels need,
@@ -483,8 +983,15 @@ function renderLog() {
   }
   const items = all.slice().reverse();
   document.getElementById("aw-log").innerHTML = items.map(a => {
-    const legs = Object.entries(a.weights)
-      .map(([k, v]) => `${k}=${Math.round(v * 100)}%`).join(" ");
+    // esc() on the symbol: the whole string can no longer be escaped at the
+    // end because it now carries markup for the arrow.
+    const fmt = w => Object.entries(w)
+      .map(([k, v]) => `${esc(k)}=${(v * 100).toFixed(1)}%`).join(" ");
+    // Rows where cash was spent to swap leveraged exposure for plain QQQ show
+    // the book on both sides of the swap.
+    const legs = a.weights_pre
+      ? `${fmt(a.weights_pre)} <span class="arrow">&#8594;</span> ${fmt(a.weights)}`
+      : fmt(a.weights);
     // Tags arrive as "REBAL" / "to PORT" / "to <SYM>"; render them in the
     // current language, and key the colour on meaning rather than wording.
     const isRebal = a.tag === "REBAL";
@@ -493,9 +1000,14 @@ function renderLog() {
     const label = isRebal ? t("log.rebal")
                 : isOff ? t("log.toport")
                 : `${t("log.tosleeve")} ${a.tag.replace(/^to\s+/, "")}`;
-    return `<div class="logline"><span class="d">${a.date}</span>` +
-           `<span class="t ${cls}">${esc(label)}</span>` +
-           `<span class="w">${esc(legs)}</span></div>`;
+    // vt < 1 means the volatility brake throttled the book that day.
+    const vt = (a.vt !== undefined && a.vt < 1)
+      ? `<span class="vt" title="volatility brake">x${a.vt.toFixed(2)}</span>` : "";
+    const on = AW.markDate === a.date ? " is-marked" : "";
+    return `<div class="logline${on}" data-date="${a.date}" role="button" tabindex="0">` +
+           `<span class="d">${a.date}</span>` +
+           `<span class="t ${cls}">${esc(label)}</span>${vt}` +
+           `<span class="w">${legs}</span></div>`;
   }).join("");
 }
 
@@ -503,6 +1015,30 @@ function renderLog() {
 function currentAmount() {
   const v = parseFloat(document.getElementById("aw-amount").value);
   return isFinite(v) && v > 0 ? v : 100000;
+}
+
+/* The composition chart carries its own window so you can scrub through
+ * allocation history without disturbing the equity chart's period (and the
+ * stats table that reads from it). Same 252-bars-per-year convention. */
+function syncBandLabels() {
+  document.getElementById("awb-from-label").textContent = AW.data.dates[AW.b0];
+  document.getElementById("awb-to-label").textContent = AW.data.dates[AW.b1];
+}
+
+function setBandRange(i0, i1) {
+  const n = AW.data.dates.length;
+  AW.b0 = Math.max(0, Math.min(i0, n - 2));
+  AW.b1 = Math.max(AW.b0 + 1, Math.min(i1, n - 1));
+  document.getElementById("awb-from").value = AW.b0;
+  document.getElementById("awb-to").value = AW.b1;
+  syncBandLabels();
+  renderBands();
+}
+
+function setBandYears(y) {
+  const n = AW.data.dates.length;
+  if (y === null) { setBandRange(0, n - 1); return; }
+  setBandRange(Math.max(0, n - 1 - Math.round(y * 252)), n - 1);
 }
 
 function syncRangeLabels() {
@@ -563,7 +1099,7 @@ function renderLabels() {
   // Heading follows the translation table, not the payload, so it matches the
   // tab that opened it.
   document.getElementById("aw-title").textContent =
-    t("panel." + (AW.kind || "base")) || d.title || "All Weather 9";
+    t("panel." + (AW.kind || "base")) || d.title || "All Weather Dynamic";
   // Every place the sleeve instrument is named follows the payload, so the
   // leveraged tab never claims to be holding QQQ.
   const sym = d.sleeve_symbol || "QQQ";
@@ -620,10 +1156,18 @@ function nextUpdateAt() {
   if (!hours.length) return null;
   hours = hours.slice().sort((a, b) => a - b);
 
-  // The configured hours are SERVER-local. Work in server-local time to pick
-  // the next one, then hand back a real instant so it displays in the
-  // viewer's own zone. On a single-machine install the two offsets match and
-  // this reduces to the obvious thing.
+  // The configured hours belong to the SCHEDULE's zone -- update_timezone if
+  // one is set, otherwise the server's own local time. serverOffset carries
+  // that zone's current UTC offset. Work in it to pick the next slot, then
+  // hand back a real instant so it displays in the viewer's zone. On a
+  // single-machine install the offsets match and this reduces to the obvious
+  // thing; across a UTC server and a local desktop it is what keeps the two
+  // stamps describing the same moment.
+  // The MINUTE matters. This used to be hardcoded to 0 while the schedule
+  // actually runs at :20, so every "next update" stamp was 20 minutes early.
+  const mParsed = parseInt(document.body.dataset.updateMinute || "", 10);
+  const minute = Number.isNaN(mParsed) ? 0 : Math.min(59, Math.max(0, mParsed));
+
   const parsed = parseInt(document.body.dataset.serverOffset || "", 10);
   const nowMs = Date.now();
   const serverOff = Number.isNaN(parsed)
@@ -636,7 +1180,7 @@ function nextUpdateAt() {
   for (let day = 0; day < 2; day++) {
     for (const h of hours) {
       const sWhen = Date.UTC(sNow.getUTCFullYear(), sNow.getUTCMonth(),
-                             sNow.getUTCDate() + day, h, 0, 0, 0);
+                             sNow.getUTCDate() + day, h, minute, 0, 0);
       const when = new Date(sWhen - shift);      // back to a true instant
       if (when.getTime() > nowMs) return when;
     }
@@ -654,8 +1198,10 @@ function renderThemed({ withLog = false } = {}) {
   if (!AW.data) return;
   renderLabels();      // language-dependent wording
   renderStats();       // legend swatches are inline-coloured
+  renderWarnings();    // e.g. rate-tied Sortino disabled
   renderMonthly();     // heat-map blocks are inline-coloured
   renderChart();
+  renderBands();
   renderAllocation();
   if (withLog) renderLog();
 }
@@ -727,7 +1273,7 @@ function bootPanel() {
   document.getElementById("aw-asof").textContent = d.as_of;
 
   const sel = document.getElementById("aw-frac");
-  // Show 50% / 75% / 100%; the option VALUE stays the payload's key ("0.50")
+  // Label as a percentage; the option VALUE stays the payload's key ("0.60")
   // so nothing downstream has to know about the friendlier label.
   sel.innerHTML = d.fracs.map(f =>
     `<option value="${f}">${Math.round(parseFloat(f) * 100)}%</option>`).join("");
@@ -752,11 +1298,29 @@ function bootPanel() {
   document.getElementById("aw-from").max = n - 1;
   document.getElementById("aw-to").max = n - 1;
 
+  const bf = document.getElementById("awb-from");
+  const bt = document.getElementById("awb-to");
+  if (bf && bt) { bf.max = n - 1; bt.max = n - 1; }
+
   const defYears = parseFloat(document.body.dataset.defaultYears)
                    || d.default_years || 5;
   document.querySelectorAll(".aw-quick").forEach(b =>
     b.setAttribute("aria-pressed", String(b.dataset.years === String(defYears))));
+  document.querySelectorAll(".awb-quick").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.years === String(defYears))));
+  AW.markDate = null;                 // a new payload invalidates the marker
+  AW.dca = false;
+  const dbox = document.getElementById("aw-dca");
+  if (dbox) dbox.checked = false;
+  const bwrap = document.getElementById("aw-brake-wrap");
+  const bbox = document.getElementById("aw-brake");
+  if (bwrap && bbox) {
+    bwrap.hidden = !d.variants_nobrake;   // nothing to compare against
+    AW.volBrake = true;
+    bbox.checked = true;
+  }
   setYears(defYears);
+  setBandYears(defYears);             // same default window as the equity chart
   renderAllocation();
   renderLog();
 }
@@ -764,6 +1328,44 @@ function bootPanel() {
 /* Listeners are bound once for the life of the page, not per payload. */
 let _wired = false;
 function wireOnce() {
+  // Delegated so it survives every re-render of the log. Clicking a row marks
+  // that date on the composition chart; clicking the marked row clears it.
+  const logHost = document.getElementById("aw-log");
+  if (logHost && !logHost.dataset.wired) {
+    logHost.dataset.wired = "1";
+    const pick = ev => {
+      const row = ev.target.closest(".logline");
+      if (!row) return;
+      const date = row.dataset.date;
+      AW.markDate = (AW.markDate === date) ? null : date;
+      // If the marked date sits outside the composition chart's window, slide
+      // the window to centre it while KEEPING the current zoom width, so the
+      // level of detail you were looking at is preserved. y is never pinned,
+      // so it rescales to whatever is now visible.
+      if (AW.markDate) {
+        const di = AW.data.dates.indexOf(AW.markDate);
+        if (di >= 0 && (di < AW.b0 || di > AW.b1)) {
+          const n = AW.data.dates.length;
+          const w = AW.b1 - AW.b0;
+          let b0 = Math.round(di - w / 2);
+          b0 = Math.max(0, Math.min(b0, n - 1 - w));
+          setBandRange(b0, b0 + w);          // re-renders
+        } else {
+          renderBands();
+        }
+      } else {
+        renderBands();
+      }
+      renderLog();
+      const el = document.getElementById("aw-bands");
+      if (AW.markDate && el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    };
+    logHost.addEventListener("click", pick);
+    logHost.addEventListener("keydown", ev => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(ev); }
+    });
+  }
+
   if (_wired) return;
   _wired = true;
   const from = document.getElementById("aw-from");
@@ -777,9 +1379,39 @@ function wireOnce() {
       setYears(b.dataset.years === "max" ? null : +b.dataset.years);
     });
   });
+  // Composition chart's own controls. Distinct classes/ids from the equity
+  // chart's: `.aw-quick` is selected globally, so reusing it would drive both.
+  const bfrom = document.getElementById("awb-from");
+  const bto = document.getElementById("awb-to");
+  if (bfrom && bto) {
+    bfrom.addEventListener("input", () => setBandRange(+bfrom.value, AW.b1));
+    bto.addEventListener("input", () => setBandRange(AW.b0, +bto.value));
+  }
+  document.querySelectorAll(".awb-quick").forEach(b => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll(".awb-quick").forEach(x =>
+        x.setAttribute("aria-pressed", String(x === b)));
+      setBandYears(b.dataset.years === "max" ? null : +b.dataset.years);
+    });
+  });
+  const brakeBox = document.getElementById("aw-brake");
+  if (brakeBox) {
+    brakeBox.addEventListener("change", e => {
+      AW.volBrake = e.target.checked;
+      renderThemed({ withLog: true });
+    });
+  }
+  const dcaBox = document.getElementById("aw-dca");
+  if (dcaBox) {
+    dcaBox.addEventListener("change", e => {
+      AW.dca = e.target.checked;
+      renderThemed();          // chart + stats only; the log is unaffected
+    });
+  }
   document.getElementById("aw-log-scale").addEventListener("change", e => {
     AW.logScale = e.target.checked;
     renderChart();
+    renderBands();
   });
   document.getElementById("aw-amount").addEventListener("input", renderAllocation);
   document.getElementById("aw-export").addEventListener("click", () => {

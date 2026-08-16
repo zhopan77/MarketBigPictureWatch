@@ -62,7 +62,7 @@ ZH = {
     "Real GDP Per Capita (2009 USD)": "人均实际 GDP（2009年美元）",
     "GDP Per Capita": "人均 GDP",
     "Shiller P/E 10": "席勒市盈率（10年）",
-    "Tobin's Q": "托宾 Q",
+    "Buffett Indicator": "巴菲特指标",
     "1 Yr": "1年", "2 Yr": "2年", "5 Yr": "5年",
     "10 Yr": "10年", "20 Yr": "20年",
     "1Yr/15Yr": "1年/15年",

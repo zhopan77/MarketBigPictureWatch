@@ -1,11 +1,62 @@
-fastapi>=0.110
-uvicorn[standard]>=0.29
-jinja2>=3.1
-plotly>=5.15
-pandas>=2.0
-numpy>=1.24
-yfinance>=0.2.40
-pandas-datareader>=0.10
-requests>=2.31
-lxml>=5.0
-apscheduler>=3.10
+# Exact pins, on purpose.
+#
+# The previous version specified floors only (pandas>=2.0, numpy>=1.24). That
+# is the ordinary thing to do and it was wrong here: two machines installing
+# on different days got different versions, and different versions of numpy
+# and pandas do not compute the same numbers. pandas' rolling mean is an
+# online add/remove kernel whose result depends on its implementation, and
+# pandas 3 changed date resolution in a way this app's own pickle loader has
+# to work around. A backtest that disagrees between two boxes is not a
+# backtest you can act on, so the versions are now part of the program.
+#
+# The two that MUST match between machines are numpy and pandas -- everything
+# numeric flows through them. The rest are pinned for a reproducible install
+# rather than for arithmetic; they serve HTTP and draw charts.
+#
+# Verified to resolve as pure wheels (no compiler needed) for CPython 3.11,
+# 3.12, 3.13 and 3.14, on both manylinux x86-64 and Windows amd64.
+#
+# The 3.14 requirement is what set these two versions (v6.2.6): numpy 2.2.6
+# publishes no cp314 wheel and pandas 2.3.2 none either, so pip fell back to
+# building numpy from source and died looking for a C compiler. numpy 2.3.x
+# also raises the floor to Python 3.11, which is why 3.10 is no longer
+# supported.
+#
+# Changing a pin is fine -- but change it on BOTH machines, and re-run
+# `python run.py selftest` on each to confirm the hashes still agree.
+
+# --- numeric core: identical versions here or the numbers diverge ---
+numpy==2.3.5
+pandas==2.3.3
+
+# --- data sources ---
+# yfinance is deliberately held on the 0.2 line. The 1.x releases reshaped the
+# multi-symbol frame, and fetch_prices indexes it as raw["Open"][symbol].
+yfinance==0.2.66
+# Version depends on the interpreter, which is the one exception to the
+# exact-pinning rule here.
+#
+# 0.10.0 imports `from distutils.version import LooseVersion` at module scope.
+# distutils was REMOVED from the standard library in Python 3.12, so 0.10.0
+# INSTALLS fine there and then fails to import -- which took the whole server
+# down on an Anaconda 3.12 box. 0.11.1 has no distutils reference, but it is
+# only published for Python 3.11+, so pinning it alone would drop support for
+# Ubuntu 22.04's stock 3.10.
+#
+# Safe to vary: this package is used ONLY for the un-keyed FRED fallback
+# (app/fred.py, imported lazily). It touches no strategy arithmetic, so the
+# numbers stay identical across machines regardless of which one is installed.
+# numpy and pandas -- the two that do matter -- remain exactly pinned above.
+pandas-datareader==0.11.1; python_version >= "3.11"
+pandas-datareader==0.10.0; python_version < "3.11"
+requests==2.32.4
+lxml==6.0.4
+
+# --- web server and charts ---
+fastapi==0.115.14
+uvicorn==0.35.0
+jinja2==3.1.6
+plotly==6.3.1
+
+# --- the twice-daily in-process update; without it nothing refreshes ---
+apscheduler==3.11.0
